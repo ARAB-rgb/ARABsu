@@ -91,20 +91,7 @@ export function SaasLandingPortal({
   const [gReqCompPhone, setGReqCompPhone] = useState("");
   const [gReqCompCapital, setGReqCompCapital] = useState<number | "">("");
 
-  const [savedEmpCode, setSavedEmpCode] = useState<string>("");
-  const [savedEmpName, setSavedEmpName] = useState<string>("");
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
-
-  React.useEffect(() => {
-    try {
-      const c = localStorage.getItem("aw_saved_employee_code");
-      const n = localStorage.getItem("aw_saved_employee_name");
-      if (c) setSavedEmpCode(c);
-      if (n) setSavedEmpName(n);
-    } catch {
-      //
-    }
-  }, []);
 
   // Auto initialize Google display name if available
   React.useEffect(() => {
@@ -571,60 +558,37 @@ export function SaasLandingPortal({
               </div>
 
               <form onSubmit={handleLogin} className="space-y-5">
-                {/* Saved Quick Employee Login Banner */}
-                {savedEmpCode && (
-                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-3 flex items-center justify-between gap-2 text-right animate-in fade-in duration-200">
-                    <div className="space-y-0.5">
-                      <span className="block text-[10px] font-bold text-amber-400">⚡ دخول مباشر مفوّض محفوظ</span>
-                      <span className="block text-xs font-black text-white">{savedEmpName || "موظف مسجل"} (كود: {savedEmpCode})</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLoginCode(savedEmpCode);
-                        showToast(`تم تعبئة كود الموظف (${savedEmpCode}) بنجاح! أدخل كلمة المرور للدخول.`, "info");
-                      }}
-                      className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-black rounded-xl transition-all cursor-pointer shrink-0 shadow-md"
-                    >
-                      استخدام الكود
-                    </button>
-                  </div>
-                )}
-
-                {/* 2. Employee Code */}
+                {/* 1. Username Field */}
                 <div className="space-y-1.5">
                   <div className="flex justify-between items-center px-1">
-                    <label className="text-[10px] font-black text-slate-300">كود الموظف / اسم المستخدم</label>
-                    <span className="text-[9px] text-slate-500 font-mono">USER CODE</span>
+                    <label className="text-[10px] font-black text-slate-300">اسم المستخدم</label>
+                    <span className="text-[9px] text-slate-500 font-mono">USERNAME</span>
                   </div>
                   <div className="relative h-11">
                     <User className="absolute right-4 top-3.5 w-4 h-4 text-amber-500/70" />
                     <input
                       required
                       type="text"
-                      placeholder="أدخل كود الموظف أو اسم المستخدم..."
+                      placeholder="أدخل اسم المستخدم..."
                       value={loginCode}
                       onChange={(e) => setLoginCode(e.target.value)}
                       className="w-full h-full pl-4 pr-11 py-2.5 bg-slate-950/80 border border-slate-800 rounded-2xl text-xs font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 transition-all text-right"
                     />
                   </div>
-                  <p className="text-[9px] text-slate-400 font-medium px-1 pt-0.5 leading-relaxed">
-                    💡 <b className="text-amber-400">دخول مباشر للموظف:</b> عند التسجيل لأول مرة، أدخل كودك الوظيفي وكلمة المرور المرغوبة ليتم ربط حسابك اعتمادياً وتلقائياً.
-                  </p>
                 </div>
 
-                {/* 3. Password */}
+                {/* 2. Password Field */}
                 <div className="space-y-1.5">
                   <div className="flex justify-between items-center px-1">
-                    <label className="text-[10px] font-black text-slate-300">الرمز السري المالي / كلمة المرور</label>
-                    <span className="text-[9px] text-slate-500 font-mono">SECURE PASSWORD</span>
+                    <label className="text-[10px] font-black text-slate-300">كلمة السر</label>
+                    <span className="text-[9px] text-slate-500 font-mono">PASSWORD</span>
                   </div>
                   <div className="relative h-11">
                     <Key className="absolute right-4 top-3.5 w-4 h-4 text-amber-500/70" />
                     <input
                       required
                       type="password"
-                      placeholder="أدخل الرمز السري..."
+                      placeholder="أدخل كلمة السر..."
                       value={loginPass}
                       onChange={(e) => setLoginPass(e.target.value)}
                       className="w-full h-full pl-4 pr-11 py-2.5 bg-slate-950/80 border border-slate-800 rounded-2xl text-xs font-mono font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 transition-all text-left"
@@ -710,8 +674,8 @@ export function SaasLandingPortal({
         <AuthenticatorModal
           isOpen={showAuthModal}
           onClose={() => setShowAuthModal(false)}
-          userCode={loginCode || savedEmpCode || "1001"}
-          userName={savedEmpName || loginCode || "الموظف المفوّض"}
+          userCode={loginCode || "1001"}
+          userName={loginCode || "المستخدم"}
           showToast={showToast}
           onSuccess2FA={(userCode, totpCode) => {
             if (userCode) setLoginCode(userCode);

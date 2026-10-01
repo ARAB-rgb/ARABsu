@@ -1104,13 +1104,7 @@ export default function App() {
         return;
       }
 
-      // Save employee code for quick reference
-      try {
-        localStorage.setItem("aw_saved_employee_code", user.code);
-        localStorage.setItem("aw_saved_employee_name", user.name);
-      } catch (e) {
-        console.warn("LocalStorage error:", e);
-      }
+
 
       // Ensure we have loaded companies
       let currentCompanies = companies;
@@ -1264,8 +1258,6 @@ export default function App() {
 
       setCurrentUser(matchedUser as AuthUser);
       localStorage.setItem("aw_current_user", JSON.stringify(matchedUser));
-      localStorage.setItem("aw_saved_employee_code", matchedUser.code || effectiveCode);
-      localStorage.setItem("aw_saved_employee_name", matchedUser.name || "");
       showToast(`✅ تم تسجيل الدخول المباشر المصدق: ${matchedUser.name}`);
       await logSession(matchedUser as AuthUser, "تسجيل دخول مصدق - Authenticator 2FA");
       await loadEverything();
@@ -1641,6 +1633,8 @@ export default function App() {
     const userToLog = currentUser;
     setCurrentUser(null);
     localStorage.removeItem("aw_current_user");
+    localStorage.removeItem("aw_saved_employee_code");
+    localStorage.removeItem("aw_saved_employee_name");
     showToast("تم تسجيل الخروج بنجاح", "info");
 
     if (userToLog) {
