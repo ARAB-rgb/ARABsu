@@ -1,0 +1,1118 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { initializeApp } from "firebase/app";
+import { getAuth, signInAnonymously } from "firebase/auth";
+import {
+  initializeFirestore,
+  getFirestore,
+  doc,
+  setDoc,
+  getDocs,
+  deleteDoc,
+  collection,
+  query,
+  where,
+  orderBy,
+  getDocFromServer
+} from "firebase/firestore";
+import firebaseConfig from "../firebase-applet-config.json";
+import { createClient } from "@supabase/supabase-js";
+import { safeStorage } from "./safeStorage";
+
+const localStorage = safeStorage;
+
+import { User, Installment, Quote, Receipt, Payment, Expense, Project, Worker, DbSession } from "./types";
+
+// Setup Supabase Client
+const DEFAULT_SUPABASE_URL = "https://dypyrtmnxaitowaophvx.supabase.co";
+const DEFAULT_SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR5cHlydG1ueGFpdG93YW9waHZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk0Mjc2NTksImV4cCI6MjA5NTAwMzY1OX0.ReONlt3c3Lp8Aes-sO0G2sANoQn8mYBtCQ4IYkf9i7o";
+
+export function getSupabaseCredentials() {
+  const url = localStorage.getItem("aw_supabase_url") || DEFAULT_SUPABASE_URL;
+  const key = localStorage.getItem("aw_supabase_key") || DEFAULT_SUPABASE_KEY;
+  const isCustom = !!localStorage.getItem("aw_supabase_url");
+  return { url, key, isCustom };
+}
+
+const initialCreds = getSupabaseCredentials();
+
+export let supabase = createClient(initialCreds.url, initialCreds.key);
+
+// Track whether Supabase is healthy or quota restricted
+export let isSupabaseHealthy = true;
+
+export function setSupabaseHealthyState(state: boolean) {
+  isSupabaseHealthy = state;
+}
+
+export function isQuotaError(error: any): boolean {
+  if (!error) return false;
+  const msg = String(error.message || "").toLowerCase();
+  return (
+    msg.includes("quota") ||
+    msg.includes("restricted") ||
+    msg.includes("egress") ||
+    msg.includes("violation") ||
+    (typeof error.status === "number" && (error.status === 402 || error.status === 403))
+  );
+}
+
+export async function checkSupabaseHealth(): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.from("users").select("id").limit(1);
+    if (error) {
+      if (isQuotaError(error)) {
+        console.warn("⚠️ Supabase has restriction limits (egress quota limits). Falling back to Firestore database.", error.message);
+        isSupabaseHealthy = false;
+        return false;
+      }
+      // If other database error, maybe table is missing or something, but connection is alive.
+      // If it is just invalid API Key/URL, it might be unauthorized
+      isSupabaseHealthy = true; 
+      return true;
+    } else {
+      isSupabaseHealthy = true;
+      console.log("🟢 Supabase connected successfully as active source of truth!");
+      return true;
+    }
+  } catch (err: any) {
+    console.warn("⚠️ Supabase connection error. Active Firestore database fallback will be used.", err?.message || err);
+    isSupabaseHealthy = false;
+    return false;
+  }
+}
+
+export async function saveSupabaseCredentials(url: string, key: string): Promise<boolean> {
+  if (!url || !key) {
+    localStorage.removeItem("aw_supabase_url");
+    localStorage.removeItem("aw_supabase_key");
+  } else {
+    localStorage.setItem("aw_supabase_url", url.trim());
+    localStorage.setItem("aw_supabase_key", key.trim());
+  }
+  const creds = getSupabaseCredentials();
+  supabase = createClient(creds.url, creds.key);
+  return await checkSupabaseHealth();
+}
+
+checkSupabaseHealth();
+
+// Initialize Firebase
+export const app = initializeApp(firebaseConfig);
+export const db = initializeFirestore(
+  app,
+  {
+    experimentalForceLongPolling: true,
+  },
+  firebaseConfig.firestoreDatabaseId
+); /* CRITICAL: The app will break without this line */
+export const auth = getAuth();
+
+// Test Connection on Initial Boot
+async function testConnection() {
+  try {
+    await getDocFromServer(doc(db, "test", "connection"));
+  } catch (error: any) {
+    if (error instanceof Error && (error.message.includes("offline") || (error as any)?.code === "unavailable")) {
+      console.warn("Firestore connection check: offline or connecting via long-polling.", error.message);
+    }
+  }
+}
+testConnection();
+
+// Auto Authenticate Anonymously to protect Firestore operations under security rules
+signInAnonymously(auth).catch((err) => {
+  console.warn("Notice: Optional Anonymous Auth not enabled in Firebase Console. Using fallback unauthenticated access.", err);
+});
+
+// JSON Error Handling Pattern
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  }
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+export function cleanPayload(obj: any): any {
+  if (obj === null || obj === undefined) return null;
+  if (Array.isArray(obj)) {
+    return obj.map(cleanPayload);
+  }
+  if (typeof obj === 'object') {
+    const cleaned: any = {};
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (val !== undefined) {
+        cleaned[key] = cleanPayload(val);
+      }
+    }
+    return cleaned;
+  }
+  return obj;
+}
+
+// Fluent Hybrid Chain for Real Supabase API with Firestore Fallback
+class SupabaseEmulationChain {
+  private table: string;
+  private filters: { field: string; val: any }[] = [];
+  private orderField: string | null = null;
+  private orderAscending: boolean = false;
+  private action: 'select' | 'insert' | 'update' | 'delete' | 'upsert' | null = null;
+  private payload: any = null;
+
+  constructor(table: string) {
+    this.table = table;
+  }
+
+  select(fields: string = "*") {
+    if (!this.action) {
+      this.action = 'select';
+    }
+    return this;
+  }
+
+  insert(payload: any) {
+    this.action = 'insert';
+    this.payload = cleanPayload(payload);
+    return this;
+  }
+
+  update(payload: any) {
+    this.action = 'update';
+    this.payload = cleanPayload(payload);
+    return this;
+  }
+
+  upsert(payload: any, options?: any) {
+    this.action = 'upsert';
+    this.payload = cleanPayload(payload);
+    return this;
+  }
+
+  delete() {
+    this.action = 'delete';
+    return this;
+  }
+
+  eq(field: string, val: any) {
+    this.filters.push({ field, val });
+    return this;
+  }
+
+  order(field: string, options?: { ascending?: boolean }) {
+    this.orderField = field;
+    this.orderAscending = options?.ascending ?? false;
+    return this;
+  }
+
+  private async executeRealSupabase() {
+    let queryBuilder: any = supabase.from(this.table);
+
+    if (this.action === 'select') {
+      let q = queryBuilder.select("*");
+      for (const f of this.filters) {
+        q = q.eq(f.field, f.val);
+      }
+      if (this.orderField) {
+        q = q.order(this.orderField, { ascending: this.orderAscending });
+      }
+      const { data, error } = await q;
+      if (error) throw error;
+
+      // Fallback to Firestore if companies/users table is empty in Supabase due to RLS policies
+      if (
+        (this.table === "companies" || this.table === "users") &&
+        (!data || data.length === 0)
+      ) {
+        try {
+          const colRef = collection(db, this.table);
+          const snap = await getDocs(colRef);
+          const fDocs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          return { data: fDocs, error: null };
+        } catch (e) {
+          console.warn(`Failed to fallback to Firestore ${this.table}:`, e);
+        }
+      }
+
+      return { data, error: null };
+    }
+
+    if (this.action === 'insert') {
+      const { data, error } = await queryBuilder.insert(this.payload).select();
+      if (error) throw error;
+      const records = Array.isArray(this.payload) ? this.payload : [this.payload];
+      for (const rec of records) {
+        if (rec && rec.id) {
+          setDoc(doc(db, this.table, rec.id), { id: rec.id, ...rec, created_at: rec.created_at || new Date().toISOString() }, { merge: true }).catch(() => {});
+        }
+      }
+      return { data: Array.isArray(this.payload) ? data : data?.[0], error: null };
+    }
+
+    if (this.action === 'update') {
+      let q = queryBuilder.update(this.payload);
+      for (const f of this.filters) {
+        q = q.eq(f.field, f.val);
+      }
+      const { data, error } = await q.select();
+      if (error) throw error;
+      const idFilter = this.filters.find(f => f.field === 'id');
+      if (idFilter) {
+        setDoc(doc(db, this.table, idFilter.val), this.payload, { merge: true }).catch(() => {});
+      }
+      return { data: data?.[0] || null, error: null };
+    }
+
+    if (this.action === 'upsert') {
+      const { data, error } = await queryBuilder.upsert(this.payload).select();
+      if (error) throw error;
+      const records = Array.isArray(this.payload) ? this.payload : [this.payload];
+      for (const rec of records) {
+        if (rec && rec.id) {
+          setDoc(doc(db, this.table, rec.id), { id: rec.id, ...rec, created_at: rec.created_at || new Date().toISOString() }, { merge: true }).catch(() => {});
+        }
+      }
+      return { data: Array.isArray(this.payload) ? data : data?.[0], error: null };
+    }
+
+    if (this.action === 'delete') {
+      let q = queryBuilder.delete();
+      for (const f of this.filters) {
+        q = q.eq(f.field, f.val);
+      }
+      const { data, error } = await q;
+      if (error) throw error;
+      const idFilter = this.filters.find(f => f.field === 'id');
+      if (idFilter) {
+        deleteDoc(doc(db, this.table, idFilter.val)).catch(() => {});
+      }
+      return { data: null, error: null };
+    }
+
+    throw new Error("Unsupported action for Supabase");
+  }
+
+  async maybeSingle(): Promise<{ data: any | null; error: Error | null }> {
+    // المحاولة أولاً من Supabase
+    if (isSupabaseHealthy) {
+      try {
+        let q = supabase.from(this.table).select("*");
+
+        for (const f of this.filters) {
+          q = q.eq(f.field, f.val);
+        }
+
+        const { data, error } = await q.limit(1).maybeSingle();
+
+        // إذا وجد السجل في Supabase نعيده مباشرة
+        if (!error && data) {
+          return { data, error: null };
+        }
+
+        // إذا لم يجد السجل، لا نعتبرها بيانات دخول خاطئة
+        // بل ننتقل إلى Firestore
+        console.warn(
+          `No record found in Supabase table ${this.table}; trying Firestore fallback.`
+        );
+      } catch (err: any) {
+        console.warn(
+          `Supabase lookup failed for ${this.table}; trying Firestore fallback.`,
+          err
+        );
+      }
+    }
+
+    // البحث الاحتياطي في Firestore
+    try {
+      const qConstraints: any[] = [];
+
+      for (const f of this.filters) {
+        qConstraints.push(where(f.field, "==", f.val));
+      }
+
+      const colRef = collection(db, this.table);
+      const firestoreQuery = query(colRef, ...qConstraints);
+      const snap = await getDocs(firestoreQuery);
+
+      const docs = snap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }));
+
+      return {
+        data: docs[0] || null,
+        error: null,
+      };
+    } catch (err: any) {
+      console.error(`Firestore fallback failed for ${this.table}:`, err);
+
+      return {
+        data: null,
+        error: err instanceof Error ? err : new Error(String(err)),
+      };
+    }
+  }
+
+  // Promise-like then method so it can be directly awaited
+  async then(resolve?: (val: any) => any, reject?: (err: any) => any) {
+    try {
+      const res = await this.execute();
+      if (resolve) return resolve(res);
+      return res;
+    } catch (err) {
+      if (reject) return reject(err);
+      throw err;
+    }
+  }
+
+  private async execute() {
+    if (isSupabaseHealthy) {
+      try {
+        return await this.executeRealSupabase();
+      } catch (err: any) {
+        console.warn("⚠️ Real Supabase query threw exception, falling back to Firestore:", err);
+        isSupabaseHealthy = false;
+        // Let it fall through to Firestore fallback
+      }
+    }
+
+    // --- Original Firestore Fallback ---
+    if (this.action === 'select') {
+      try {
+        const colRef = collection(db, this.table);
+        const qConstraints: any[] = [];
+        for (const f of this.filters) {
+          qConstraints.push(where(f.field, '==', f.val));
+        }
+        
+        let snap;
+        try {
+          const qOrderedConstraints = [...qConstraints];
+          if (this.orderField) {
+            qOrderedConstraints.push(orderBy(this.orderField, this.orderAscending ? 'asc' : 'desc'));
+          }
+          const q = qOrderedConstraints.length > 0 ? query(colRef, ...qOrderedConstraints) : colRef;
+          snap = await getDocs(q);
+        } catch (queryErr) {
+          // Fallback if orderBy or compound index is missing in Firestore
+          const qSimple = qConstraints.length > 0 ? query(colRef, ...qConstraints) : colRef;
+          snap = await getDocs(qSimple);
+        }
+
+        let data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (this.orderField) {
+          const orderKey = this.orderField;
+          const asc = this.orderAscending;
+          data.sort((a: any, b: any) => {
+            const valA = a[orderKey] ?? "";
+            const valB = b[orderKey] ?? "";
+            if (valA < valB) return asc ? -1 : 1;
+            if (valA > valB) return asc ? 1 : -1;
+            return 0;
+          });
+        }
+        return { data, error: null };
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.LIST, this.table);
+        return { data: [], error: err };
+      }
+    }
+
+    if (this.action === 'insert') {
+      try {
+        const records = Array.isArray(this.payload) ? this.payload : [this.payload];
+        const results = [];
+        for (const rec of records) {
+          const docId = rec.id || doc(collection(db, this.table)).id;
+          const docRef = doc(db, this.table, docId);
+          const toSave = {
+            id: docId,
+            ...rec,
+            created_at: rec.created_at || new Date().toISOString()
+          };
+          await setDoc(docRef, toSave);
+          results.push(toSave);
+        }
+        return { data: Array.isArray(this.payload) ? results : results[0], error: null };
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.CREATE, this.table);
+        return { data: null, error: err };
+      }
+    }
+
+    if (this.action === 'update') {
+      try {
+        const idFilter = this.filters.find(f => f.field === 'id');
+        if (idFilter) {
+          const docId = idFilter.val;
+          const docRef = doc(db, this.table, docId);
+          await setDoc(docRef, this.payload, { merge: true });
+          return { data: { id: docId, ...this.payload }, error: null };
+        } else if (this.filters.length > 0) {
+          const qConstraints = this.filters.map(f => where(f.field, '==', f.val));
+          const colRef = collection(db, this.table);
+          const snap = await getDocs(query(colRef, ...qConstraints));
+          for (const d of snap.docs) {
+            await setDoc(doc(db, this.table, d.id), this.payload, { merge: true });
+          }
+          return { data: this.payload, error: null };
+        }
+        return { data: null, error: new Error("No filter specified for update") };
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.UPDATE, this.table);
+        return { data: null, error: err };
+      }
+    }
+
+    if (this.action === 'upsert') {
+      try {
+        const records = Array.isArray(this.payload) ? this.payload : [this.payload];
+        const results = [];
+        for (const rec of records) {
+          let docId = rec.id;
+          if (!docId && rec.code) {
+            const colRef = collection(db, this.table);
+            const q = query(colRef, where('code', '==', rec.code));
+            const snap = await getDocs(q);
+            if (!snap.empty) {
+              docId = snap.docs[0].id;
+            }
+          }
+          if (!docId) {
+            docId = doc(collection(db, this.table)).id;
+          }
+          const docRef = doc(db, this.table, docId);
+          const toSave = {
+            id: docId,
+            ...rec,
+            created_at: rec.created_at || new Date().toISOString()
+          };
+          await setDoc(docRef, toSave, { merge: true });
+          results.push(toSave);
+        }
+        return { data: Array.isArray(this.payload) ? results : results[0], error: null };
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.WRITE, this.table);
+        return { data: null, error: err };
+      }
+    }
+
+    if (this.action === 'delete') {
+      try {
+        const idFilter = this.filters.find(f => f.field === 'id');
+        if (idFilter) {
+          const docId = idFilter.val;
+          const docRef = doc(db, this.table, docId);
+          await deleteDoc(docRef);
+          return { data: null, error: null };
+        }
+        return { data: null, error: new Error("No ID filter specified for delete") };
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.DELETE, this.table);
+        return { data: null, error: err };
+      }
+    }
+
+    return { data: null, error: new Error("Unsupported chain action") };
+  }
+}
+
+export const sb = {
+  from: (table: string) => {
+    return new SupabaseEmulationChain(table);
+  }
+};
+
+// Original Helper utilities
+export function awExtractRegion(notes: string): string {
+  const text = String(notes || "");
+  const m1 = text.match(/\[الإدارة:\s*([^\]]+)\]/);
+  if (m1) return m1[1].trim();
+  
+  const m2 = text.match(/\[\[?AW_BRANCH:\s*([^\]\s]+)\]?\]/i);
+  if (m2) {
+    const code = m2[1].trim().toLowerCase();
+    const map: Record<string, string> = {
+      riyadh: "الوسطى", kharj: "الوسطى", dammam: "الشرقية",
+      central: "الوسطى", east: "الشرقية", west: "الغربية",
+      south: "الجنوب", north: "الشمال"
+    };
+    return map[code] || code;
+  }
+  return "";
+}
+
+export function awExtractCycle(notes: string): string {
+  const text = String(notes || "");
+  const m1 = text.match(/\[الدورية:\s*([^\]]+)\]/);
+  if (m1) return m1[1].trim();
+  return "";
+}
+
+export function awExtractClassification(notes: string): "مدين" | "دائن" {
+  const text = String(notes || "");
+  const m1 = text.match(/\[التصنيف:\s*([^\]]+)\]/);
+  if (m1) {
+    const val = m1[1].trim();
+    if (val === "دائن" || val === "مدين") return val;
+  }
+  return "مدين";
+}
+
+export function awExtractContractDirection(notes: string): "لنا" | "علينا" | "مصروفات عمالة" {
+  const text = String(notes || "");
+  const m1 = text.match(/\[اتجاه العقد:\s*([^\]]+)\]/);
+  if (m1) {
+    const val = m1[1].trim();
+    if (val === "علينا" || val === "مصروفات عمالة" || val === "لنا") return val;
+  }
+  return "لنا";
+}
+
+export function awExtractWorkerId(notes: string): string {
+  const text = String(notes || "");
+  const m1 = text.match(/\[رمز العامل:\s*([^\]]+)\]/);
+  if (m1) return m1[1].trim();
+  return "";
+}
+
+export function awExtractProjectId(notes: string): string {
+  const text = String(notes || "");
+  const m1 = text.match(/\[رمز المشروع:\s*([^\]]+)\]/);
+  if (m1) return m1[1].trim();
+  return "";
+}
+
+export function awExtractTreasury(notes: string): string {
+  const text = String(notes || "");
+  const m1 = text.match(/\[الخزنة:\s*([^\]]+)\]/);
+  if (m1) return m1[1].trim();
+  return "";
+}
+
+export function awExtractExternalNo(notes: string): string {
+  const text = String(notes || "");
+  const m1 = text.match(/\[السند_الخارجي:\s*([^\]]+)\]/);
+  if (m1) return m1[1].trim();
+  return "";
+}
+
+export function awExtractReceiptType(notes: string): "وارد" | "صادر" {
+  const text = String(notes || "");
+  const m1 = text.match(/\[نوع_السند:\s*([^\]]+)\]/);
+  if (m1) {
+    const val = m1[1].trim();
+    if (val === "صادر" || val === "وارد") return val;
+  }
+  return "وارد";
+}
+
+export function awExtractCapital(notes: string): number {
+  const text = String(notes || "");
+  const m1 = text.match(/\[رأس_المال:\s*(\d+(\.\d+)?)\]/);
+  if (m1) return Number(m1[1]);
+  return 0;
+}
+
+export function awExtractCapitalSource(notes: string): string {
+  const text = String(notes || "");
+  const m = text.match(/\[رأس_المال_المصدر:\s*([^\]]+)\]/);
+  if (m) {
+    const val = m[1].trim();
+    if (val === "شركة" || val === "خزنة الشركة") return "شركة";
+    if (val === "تحصيل" || val === "خزنة التحصيل") return "تحصيل";
+    return val;
+  }
+  return "شركة";
+}
+
+export function awExtractCapitalCompany(notes: string): number {
+  const text = String(notes || "");
+  const source = awExtractCapitalSource(notes);
+  if (source === "تحصيل") return 0;
+  if (source === "شركة") return awExtractCapital(notes);
+  
+  const m = text.match(/\[رأس_المال_شركة:\s*(\d+(\.\d+)?)\]/);
+  return m ? Number(m[1]) : 0;
+}
+
+export function awExtractCapitalCollection(notes: string): number {
+  const text = String(notes || "");
+  const source = awExtractCapitalSource(notes);
+  if (source === "شركة") return 0;
+  if (source === "تحصيل") return awExtractCapital(notes);
+  
+  const m = text.match(/\[رأس_المال_تحصيل:\s*(\d+(\.\d+)?)\]/);
+  return m ? Number(m[1]) : 0;
+}
+
+export function awExtractCapitalSplit(notes: string, treasuryName: string): number {
+  const text = String(notes || "");
+  const cleanName = String(treasuryName || "").trim();
+  if (!cleanName) return 0;
+
+  // Escaping special characters for Regex safety
+  const escapedName = cleanName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+  const regex = new RegExp(`\\[رأس_المال_تقسيم_${escapedName}:\\s*(\\d+(\\.\\d+)?)\\]`);
+  const m = text.match(regex);
+  if (m) return Number(m[1]);
+
+  // Alternate: try matching without "خزنة " prefix
+  const altName = cleanName.replace(/^خزنة\s+/, "").trim();
+  if (altName && altName !== cleanName) {
+    const escapedAlt = altName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regexAlt = new RegExp(`\\[رأس_المال_تقسيم_${escapedAlt}:\\s*(\\d+(\\.\\d+)?)\\]`);
+    const mAlt = text.match(regexAlt);
+    if (mAlt) return Number(mAlt[1]);
+  }
+
+  // Alternate: try matching with "خزنة " prefix if not present
+  if (!cleanName.startsWith("خزنة ")) {
+    const prefixed = `خزنة ${cleanName}`;
+    const escapedPrefixed = prefixed.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regexPrefixed = new RegExp(`\\[رأس_المال_تقسيم_${escapedPrefixed}:\\s*(\\d+(\\.\\d+)?)\\]`);
+    const mPrefixed = text.match(regexPrefixed);
+    if (mPrefixed) return Number(mPrefixed[1]);
+  }
+
+  // Backward compatibility
+  if (cleanName === "خزنة الشركة" || cleanName === "شركة" || altName === "الشركة") {
+    const mLegacy = text.match(/\[رأس_المال_شركة:\s*(\\d+(\\.\\d+)?)\\]/);
+    if (mLegacy) return Number(mLegacy[1]);
+  }
+  if (cleanName === "خزنة التحصيل" || cleanName === "تحصيل" || altName === "التحصيل") {
+    const mLegacy = text.match(/\[رأس_المال_تحصيل:\s*(\\d+(\\.\\d+)?)\\]/);
+    if (mLegacy) return Number(mLegacy[1]);
+  }
+  return 0;
+}
+
+export function awGetSafeCapitalOutflow(notes: string, safeName: string): number {
+  const source = String(awExtractCapitalSource(notes) || "").trim();
+  const totalCap = awExtractCapital(notes);
+  const cleanSafe = String(safeName || "").trim();
+  if (!cleanSafe) return 0;
+  
+  if (source === "كلاهما") {
+    return awExtractCapitalSplit(notes, cleanSafe);
+  }
+  
+  // If specific split exists for this safe
+  const splitAmount = awExtractCapitalSplit(notes, cleanSafe);
+  if (splitAmount > 0) {
+    return splitAmount;
+  }
+
+  const isCompanySafe = cleanSafe === "خزنة الشركة" || cleanSafe === "شركة" || cleanSafe.replace(/^خزنة\s+/, "") === "الشركة";
+  const isCollectionSafe = cleanSafe === "خزنة التحصيل" || cleanSafe === "تحصيل" || cleanSafe.replace(/^خزنة\s+/, "") === "التحصيل";
+  
+  if (isCompanySafe && (source === "شركة" || source === "خزنة الشركة")) {
+    return totalCap;
+  }
+  if (isCollectionSafe && (source === "تحصيل" || source === "خزنة التحصيل")) {
+    return totalCap;
+  }
+  
+  // Custom safe matching (direct or normalized)
+  if (source === cleanSafe || source.replace(/^خزنة\s+/, "") === cleanSafe.replace(/^خزنة\s+/, "")) {
+    return totalCap;
+  }
+  
+  return 0;
+}
+
+export function awExtractDownPayment(notes: string): number {
+  const text = String(notes || "");
+  const m = text.match(/\[دفعة_مقدمة:\s*([\d\.]+)\]/);
+  return m ? Number(m[1]) : 0;
+}
+
+export function awExtractRenewedFrom(notes: string): string | null {
+  const text = String(notes || "");
+  const m = text.match(/\[تجديد_من_عقد:\s*([^\]]+)\]/);
+  return m ? m[1].trim() : null;
+}
+
+export function awExtractAttachment(notes: string): string | null {
+  const match = String(notes || "").match(/\[مرفق:\s*([^\]]+)\]/);
+  return match ? match[1].trim() : null;
+}
+
+export function awCleanNotes(notes: string): string {
+  return String(notes || "")
+    .replace(/\s*\[المرفق:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[مرفق:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[الإدارة:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[الخزنة:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[نوع_المستفيد:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[رأس_المال:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[رأس_المال_المصدر:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[رأس_المال_شركة:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[رأس_المال_تحصيل:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[رأس_المال_تقسيم_[^\]]+:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[السند_الخارجي:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[الدورية:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[التصنيف:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[دفعة_مقدمة:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[تجديد_من_عقد:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[اتجاه العقد:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[رمز العامل:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[رمز المشروع:\s*[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[\[?AW_BRANCH:\s*[^\]\s]+\]?\]\s*/gi, " ")
+    .trim();
+}
+
+export function awExtractBeneficiaryType(notes: string, workerId?: string | null, toName?: string): "شخص" | "مجموعة" {
+  const text = String(notes || "");
+  if (text.includes("[نوع_المستفيد: شخص]")) return "شخص";
+  if (text.includes("[نوع_المستفيد: مجموعة]")) return "مجموعة";
+  if (workerId) return "شخص";
+  
+  const name = String(toName || "").toLowerCase();
+  if (
+    name.includes("شركة") ||
+    name.includes("مجموعة") ||
+    name.includes("مؤسسة") ||
+    name.includes("فرقة") ||
+    name.includes("توريد") ||
+    name.includes("مكتب") ||
+    name.includes("عمال") ||
+    name.includes("سكن") ||
+    name.includes("شركه") ||
+    name.includes("مؤسسه")
+  ) {
+    return "مجموعة";
+  }
+  return "شخص";
+}
+
+export function awBuildNotesWithRegion(notes: string, region: string): string {
+  const clean = awCleanNotes(notes);
+  if (!region) return clean;
+  return `[الإدارة: ${region}]` + (clean ? "\n" : "") + clean;
+}
+
+export function awBuildNotesWithRegionAndTreasury(notes: string, region: string, treasury: string): string {
+  const clean = awCleanNotes(notes);
+  let extraArr = [];
+  if (region) extraArr.push(`[الإدارة: ${region}]`);
+  if (treasury) extraArr.push(`[الخزنة: ${treasury}]`);
+  
+  if (extraArr.length === 0) return clean;
+  return extraArr.join(" ") + (clean ? "\n" : "") + clean;
+}
+
+export function awBuildNotesWithRegionAndTreasuryAndExternalNo(notes: string, region: string, treasury: string, externalNo: string, type?: string): string {
+  const clean = awCleanNotes(notes);
+  let extraArr = [];
+  if (region) extraArr.push(`[الإدارة: ${region}]`);
+  if (treasury) extraArr.push(`[الخزنة: ${treasury}]`);
+  if (externalNo && externalNo.trim()) extraArr.push(`[السند_الخارجي: ${externalNo.trim()}]`);
+  if (type) extraArr.push(`[نوع_السند: ${type}]`);
+  
+  if (extraArr.length === 0) return clean;
+  return extraArr.join(" ") + (clean ? "\n" : "") + clean;
+}
+
+export function awBuildNotesWithRegionAndTreasuryAndCapital(
+  notes: string,
+  region: string,
+  treasury: string,
+  capital: number,
+  capitalSource?: string,
+  capitalCompany?: number,
+  capitalCollection?: number,
+  capitalSplits?: Record<string, number | "">
+): string {
+  const clean = awCleanNotes(notes);
+  let extraArr = [];
+  if (region) extraArr.push(`[الإدارة: ${region}]`);
+  if (treasury) extraArr.push(`[الخزنة: ${treasury}]`);
+  if (capital && capital > 0) extraArr.push(`[رأس_المال: ${capital}]`);
+  if (capitalSource) {
+    let savedSrc = capitalSource;
+    if (capitalSource === "خزنة الشركة") savedSrc = "شركة";
+    else if (capitalSource === "خزنة التحصيل") savedSrc = "تحصيل";
+    extraArr.push(`[رأس_المال_المصدر: ${savedSrc}]`);
+  }
+  if (typeof capitalCompany === "number" && capitalCompany > 0) extraArr.push(`[رأس_المال_شركة: ${capitalCompany}]`);
+  if (typeof capitalCollection === "number" && capitalCollection > 0) extraArr.push(`[رأس_المال_تحصيل: ${capitalCollection}]`);
+  
+  if (capitalSplits) {
+    Object.entries(capitalSplits).forEach(([tName, amount]) => {
+      const numVal = Number(amount || 0);
+      if (numVal > 0) {
+        extraArr.push(`[رأس_المال_تقسيم_${tName}: ${numVal}]`);
+      }
+    });
+  }
+  
+  if (extraArr.length === 0) return clean;
+  return extraArr.join(" ") + (clean ? "\n" : "") + clean;
+}
+
+export function generateNextNo(prefix: string, list: any[], field: string = "no"): string {
+  const existingSet = new Set(
+    (list || [])
+      .map(x => String(x?.[field] || "").trim().toUpperCase())
+      .filter(Boolean)
+  );
+
+  const nums = (list || [])
+    .map(x => {
+      const match = String(x?.[field] || "").match(/(\d+)$/);
+      return match ? Number(match[1]) : 0;
+    })
+    .filter(Boolean);
+
+  let nextNum = (nums.length ? Math.max(...nums) : 0) + 1;
+  let candidate = `${prefix}-${String(nextNum).padStart(4, "0")}`;
+  while (existingSet.has(candidate.toUpperCase())) {
+    nextNum++;
+    candidate = `${prefix}-${String(nextNum).padStart(4, "0")}`;
+  }
+  return candidate;
+}
+
+export function isNoUnique(no: string, list: any[], excludeId?: string, field: string = "no"): boolean {
+  if (!no) return true;
+  const target = String(no).trim().toUpperCase();
+  return !(list || []).some(x => {
+    if (excludeId && x?.id === excludeId) return false;
+    return String(x?.[field] || "").trim().toUpperCase() === target;
+  });
+}
+
+export function getContractTiming(x: Installment) {
+  const cycle = awExtractCycle(x.notes || "") || "يومي";
+  const start = x.start_date ? new Date(x.start_date) : null;
+  const installmentAmount = Number(x.installment || 0);
+  const paid = Number(x.paid || 0);
+  const paidPeriods = installmentAmount > 0 ? Math.floor(paid / installmentAmount) : 0;
+  
+  let lastPaid = "غير مسدد";
+  if (start && paidPeriods > 0) {
+    const d = new Date(start);
+    if (cycle === "اسبوعي") {
+      d.setDate(d.getDate() + (paidPeriods * 7) - 1);
+    } else if (cycle === "نصف شهر") {
+      d.setDate(d.getDate() + (paidPeriods * 15) - 1);
+    } else if (cycle === "شهري") {
+      d.setMonth(d.getMonth() + paidPeriods);
+      d.setDate(d.getDate() - 1);
+    } else { // "يومي"
+      d.setDate(d.getDate() + paidPeriods - 1);
+    }
+    lastPaid = d.toISOString().slice(0, 10);
+  }
+
+  let duePeriods = 0;
+  if (start) {
+    const today = new Date();
+    const todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const startOnly = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const diffMs = todayOnly.getTime() - startOnly.getTime();
+    const diffDays = Math.max(0, Math.floor(diffMs / 86400000) + 1);
+
+    if (cycle === "اسبوعي") {
+      duePeriods = Math.max(0, Math.floor((diffDays - 1) / 7) + 1);
+    } else if (cycle === "نصف شهر") {
+      duePeriods = Math.max(0, Math.floor((diffDays - 1) / 15) + 1);
+    } else if (cycle === "شهري") {
+      const yearsDiff = todayOnly.getFullYear() - startOnly.getFullYear();
+      const monthsDiff = todayOnly.getMonth() - startOnly.getMonth();
+      const totalMonths = yearsDiff * 12 + monthsDiff;
+      if (todayOnly.getDate() >= startOnly.getDate()) {
+        duePeriods = totalMonths + 1;
+      } else {
+        duePeriods = Math.max(0, totalMonths);
+      }
+    } else { // "يومي"
+      duePeriods = diffDays;
+    }
+  }
+
+  const overduePeriods = Math.max(0, duePeriods - paidPeriods);
+  const overdueAmount = overduePeriods * installmentAmount;
+
+  return {
+    paidDays: paidPeriods,
+    lastPaid,
+    dueDays: duePeriods,
+    overdueDays: overduePeriods,
+    overdueAmount,
+    cycle,
+  };
+}
+
+import { detectDevice, getClientIp } from "./utils/device";
+
+export async function logSession(user: User, action: string, customDeviceInfo?: string, customIp?: string, customDeviceType?: string) {
+  if (!user) return;
+  try {
+    const dev = detectDevice();
+    const ip = customIp || await getClientIp();
+    await sb.from("sessions").insert({
+      name: user.name,
+      code: user.code,
+      role: user.role,
+      time: new Date().toLocaleString("ar-SA"),
+      action,
+      device_info: customDeviceInfo || dev.deviceString,
+      device_type: customDeviceType || dev.deviceType,
+      ip_address: ip
+    });
+  } catch (err) {
+    console.error("Failed to log session:", err);
+  }
+}
+
+export function awCleanWorkerNotes(notes: string): string {
+  return String(notes || "")
+    .replace(/\s*\[عقد_[^\]]+\]\s*/g, " ")
+    .replace(/\s*\[طلب_إجازة:\s*[^\]]+\]\s*/g, " ")
+    .trim();
+}
+
+export function awExtractWorkerContract(notes: string): any {
+  const text = String(notes || "");
+  const getVal = (key: string, def = "") => {
+    const rx = new RegExp(`\\[${key}:\\s*([^\\]]+)\\]`);
+    const m = text.match(rx);
+    return m ? m[1].trim() : def;
+  };
+  const getNum = (key: string, def = 0) => {
+    const val = getVal(key);
+    return val ? Number(val) : def;
+  };
+
+  return {
+    start: getVal("عقد_البداية", ""),
+    duration: getVal("عقد_المدة", "سنة واحدة"),
+    salary: getNum("عقد_الراتب", 0),
+    housing: getNum("عقد_السكن", 0),
+    transport: getNum("عقد_الانتقال", 0),
+    other: getNum("عقد_أخرى", 0),
+    passport: getVal("عقد_جواز", ""),
+    probation: getVal("عقد_التجربة", "90 يوم"),
+    vacation: getNum("عقد_الإجازة", 30),
+    shiftStart: getVal("عقد_الوردية", "08:00"),
+    delayRate: getNum("عقد_خصم_التأخير", 0),
+  };
+}
+
+export function awExtractWorkerLeaves(notes: string): any[] {
+  const text = String(notes || "");
+  const leaves: any[] = [];
+  const matches = text.matchAll(/\[طلب_إجازة:\s*([^\]]+)\]/g);
+  for (const m of matches) {
+    const parts = m[1].split("|");
+    if (parts.length >= 4) {
+      leaves.push({
+        id: parts[0]?.trim() || "",
+        start: parts[1]?.trim() || "",
+        end: parts[2]?.trim() || "",
+        type: parts[3]?.trim() || "",
+        notes: parts[4]?.trim() || "",
+      });
+    }
+  }
+  return leaves;
+}
+
+export function awBuildWorkerNotes(cleanText: string, contract: any, leaves: any[]): string {
+  const notesText = awCleanWorkerNotes(cleanText);
+  const tags: string[] = [];
+  if (contract) {
+    if (contract.start) tags.push(`[عقد_البداية: ${contract.start}]`);
+    if (contract.duration) tags.push(`[عقد_المدة: ${contract.duration}]`);
+    if (contract.salary) tags.push(`[عقد_الراتب: ${contract.salary}]`);
+    if (contract.housing) tags.push(`[عقد_السكن: ${contract.housing}]`);
+    if (contract.transport) tags.push(`[عقد_الانتقال: ${contract.transport}]`);
+    if (contract.other) tags.push(`[عقد_أخرى: ${contract.other}]`);
+    if (contract.passport) tags.push(`[عقد_جواز: ${contract.passport}]`);
+    if (contract.probation) tags.push(`[عقد_التجربة: ${contract.probation}]`);
+    if (contract.vacation) tags.push(`[عقد_الإجازة: ${contract.vacation}]`);
+    if (contract.shiftStart) tags.push(`[عقد_الوردية: ${contract.shiftStart}]`);
+    if (contract.delayRate) tags.push(`[عقد_خصم_التأخير: ${contract.delayRate}]`);
+  }
+  if (leaves && leaves.length > 0) {
+    leaves.forEach(l => {
+      tags.push(`[طلب_إجازة: ${l.id || Math.random().toString(36).substring(7)}|${l.start}|${l.end}|${l.type}|${l.notes}]`);
+    });
+  }
+
+  if (tags.length === 0) return notesText;
+  return tags.join(" ") + (notesText ? "\n" : "") + notesText;
+}
+
+export function serializeQuoteNotes(items: any[], notes: string): string {
+  return JSON.stringify({ items, notes });
+}
+
+export function deserializeQuoteNotes(notesStr: string | undefined, fallbackAmount: number): { items: any[]; notes: string } {
+  try {
+    const text = String(notesStr || "").trim();
+    if (text && (text.startsWith("{") || text.startsWith("["))) {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") {
+        if (Array.isArray(parsed)) {
+          return { items: parsed, notes: "" };
+        }
+        if (parsed.items && Array.isArray(parsed.items)) {
+          return { items: parsed.items, notes: parsed.notes || "" };
+        }
+      }
+    }
+  } catch (e) {
+    // fallback on error
+  }
+  return {
+    items: [{ description: "بند توريد وتركيب مواد وأعمال عامة", quantity: 1, price: fallbackAmount || 0, total: fallbackAmount || 0 }],
+    notes: notesStr || ""
+  };
+}
+

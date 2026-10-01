@@ -1,0 +1,536 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Authorized employee profile with fine-grained visual permissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "password": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "employee", "supervisor"] },
+        "worker_id": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "perms": {
+          "type": "object",
+          "properties": {
+            "region": { "type": "string" },
+            "installmentsView": { "type": "boolean" },
+            "installmentsAdd": { "type": "boolean" },
+            "installmentsEdit": { "type": "boolean" },
+            "installmentsDelete": { "type": "boolean" },
+            "quotes": { "type": "boolean" },
+            "receipts": { "type": "boolean" },
+            "payments": { "type": "boolean" },
+            "expenses": { "type": "boolean" },
+            "treasury": { "type": "boolean" },
+            "projects": { "type": "boolean" },
+            "workers": { "type": "boolean" },
+            "users": { "type": "boolean" },
+            "sessions": { "type": "boolean" },
+            "print": { "type": "boolean" },
+            "dashTopCards": { "type": "boolean" },
+            "dashCollection": { "type": "boolean" },
+            "dashPulse": { "type": "boolean" },
+            "dashLateClients": { "type": "boolean" },
+            "dashLastReceipts": { "type": "boolean" },
+            "dashUpcomingPaid": { "type": "boolean" }
+          }
+        }
+      },
+      "required": ["id", "name", "code", "role"]
+    },
+    "Installment": {
+      "title": "Installment",
+      "description": "Installment contracts detailing total amounts, paid schedules, and target regions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "client": { "type": "string" },
+        "identity": { "type": "string" },
+        "nationality": { "type": "string" },
+        "phone": { "type": "string" },
+        "no": { "type": "string" },
+        "amount": { "type": "number" },
+        "paid": { "type": "number" },
+        "remaining": { "type": "number" },
+        "type": { "type": "string", "enum": ["daily"] },
+        "start_date": { "type": "string" },
+        "end_date": { "type": "string" },
+        "next_due": { "type": "string" },
+        "periods": { "type": "number" },
+        "installment": { "type": "number" },
+        "discount": { "type": "number" },
+        "after_discount": { "type": "number" },
+        "project": { "type": "string" },
+        "workplace": { "type": "string" },
+        "guarantor": { "type": "string" },
+        "status": { "type": "string", "enum": ["منتظم", "متأخر", "متعثر", "مكتمل"] },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "client", "identity", "phone", "no", "amount", "paid", "remaining"]
+    },
+    "Quote": {
+      "title": "Quote",
+      "description": "Sales quotes sent to clients, requiring status and financial breakdown",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "no": { "type": "string" },
+        "client": { "type": "string" },
+        "phone": { "type": "string" },
+        "project": { "type": "string" },
+        "amount": { "type": "number" },
+        "vat": { "type": "number" },
+        "total": { "type": "number" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["جديد", "مرسل", "مقبول", "مرفوض"] },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "no", "client", "amount"]
+    },
+    "Receipt": {
+      "title": "Receipt",
+      "description": "Receipt vouchers verifying client payments on installments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "no": { "type": "string" },
+        "from_name": { "type": "string" },
+        "amount": { "type": "number" },
+        "method": { "type": "string" },
+        "date": { "type": "string" },
+        "project": { "type": "string" },
+        "notes": { "type": "string" },
+        "installment_id": { "type": "string" },
+        "contract_no": { "type": "string" },
+        "identity": { "type": "string" },
+        "phone": { "type": "string" },
+        "nationality": { "type": "string" },
+        "remaining_before": { "type": "number" },
+        "remaining_after": { "type": "number" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "no", "from_name", "amount", "method", "date"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Payment outflow voucher",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "no": { "type": "string" },
+        "to_name": { "type": "string" },
+        "amount": { "type": "number" },
+        "method": { "type": "string" },
+        "date": { "type": "string" },
+        "project": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "no", "to_name", "amount", "method", "date"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Operational and materials expenses",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "no": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string", "enum": ["مواد", "عمالة", "نقل", "إيجار", "وقود", "إعاشة", "سيارات", "عدة", "بنزين", "تغيير زيت", "صيانة", "اتصالات", "أخرى"] },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "project": { "type": "string" },
+        "supplier": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "no", "name", "category", "amount", "date"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Project profiles detailing building coordinates and budget guidelines",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "location": { "type": "string" },
+        "engineer": { "type": "string" },
+        "budget": { "type": "number" },
+        "start_date": { "type": "string" },
+        "end_date": { "type": "string" },
+        "progress": { "type": "number" },
+        "status": { "type": "string", "enum": ["نشط", "متوقف", "منتهي"] },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "status"]
+    },
+    "Worker": {
+      "title": "Worker",
+      "description": "Laborer registry and historical advance notes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "worker_id": { "type": "string" },
+        "phone": { "type": "string" },
+        "job": { "type": "string", "enum": ["حداد", "نجار", "كهربائي", "سباك", "عامل", "مشرف"] },
+        "project": { "type": "string" },
+        "daily": { "type": "number" },
+        "days": { "type": "number" },
+        "advance": { "type": "number" },
+        "total": { "type": "number" },
+        "balance": { "type": "number" },
+        "status": { "type": "string", "enum": ["على رأس العمل", "إجازة", "موقوف"] },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "worker_id", "job", "status"]
+    },
+    "DbSession": {
+      "title": "DbSession",
+      "description": "Audit and trace logs for system state transformations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "role": { "type": "string" },
+        "time": { "type": "string" },
+        "action": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "code", "role", "time", "action"]
+    },
+    "Company": {
+      "title": "Company",
+      "description": "Companies and branches in the workspace",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "record_no": { "type": "string" },
+        "manager": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "notes": { "type": "string" },
+        "promissory_note_template": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name"]
+    },
+    "Extract": {
+      "title": "Extract",
+      "description": "Contract progress extracts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "no": { "type": "string" },
+        "company_id": { "type": "string" },
+        "project_id": { "type": "string" },
+        "client_name": { "type": "string" },
+        "total_amount": { "type": "number" },
+        "deductions": { "type": "number" },
+        "net_amount": { "type": "number" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["مسودة", "تحت المراجعة", "مقبول", "مسدد جزئياً", "تم السداد"] },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "no", "company_id", "project_id", "client_name", "total_amount", "net_amount", "date", "status"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Worker check-in and check-out logs with coordinates",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "worker_id": { "type": "string" },
+        "worker_name": { "type": "string" },
+        "project_id": { "type": "string" },
+        "project_name": { "type": "string" },
+        "date": { "type": "string" },
+        "check_in_time": { "type": "string" },
+        "check_out_time": { "type": "string" },
+        "check_in_lat": { "type": "number" },
+        "check_in_lng": { "type": "number" },
+        "check_out_lat": { "type": "number" },
+        "check_out_lng": { "type": "number" },
+        "distance_in_meters": { "type": "number" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "company_id": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "worker_id", "worker_name", "project_id", "project_name", "date", "status"]
+    },
+    "HrEmployee": {
+      "title": "HrEmployee",
+      "description": "HR Employee Profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "employee_no": { "type": "string" },
+        "id_iqama": { "type": "string" },
+        "nationality": { "type": "string" },
+        "phone": { "type": "string" },
+        "job_title": { "type": "string" },
+        "department": { "type": "string" },
+        "project": { "type": "string" },
+        "branch": { "type": "string" },
+        "start_date": { "type": "string" },
+        "basic_salary": { "type": "number" },
+        "allowances": { "type": "number" },
+        "payment_method": { "type": "string" },
+        "daily_rate": { "type": "number" },
+        "bank_account": { "type": "string" },
+        "iban": { "type": "string" },
+        "status": { "type": "string" },
+        "image_url": { "type": "string" },
+        "attachments": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "company_id", "name", "employee_no"]
+    },
+    "HrContract": {
+      "title": "HrContract",
+      "description": "HR Employee Contract",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "employee_id": { "type": "string" },
+        "employee_name": { "type": "string" },
+        "type": { "type": "string" },
+        "start_date": { "type": "string" },
+        "end_date": { "type": "string" },
+        "probation": { "type": "string" },
+        "basic_salary": { "type": "number" },
+        "housing_allowance": { "type": "number" },
+        "transport_allowance": { "type": "number" },
+        "other_allowances": { "type": "number" },
+        "work_hours": { "type": "number" },
+        "work_days": { "type": "number" },
+        "daily_rate": { "type": "number" },
+        "project_branch": { "type": "string" },
+        "conditions": { "type": "string" },
+        "status": { "type": "string" },
+        "attachments": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "company_id", "employee_id", "type", "start_date"]
+    },
+    "HrCustody": {
+      "title": "HrCustody",
+      "description": "HR Employee Custody Item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "employee_id": { "type": "string" },
+        "employee_name": { "type": "string" },
+        "type": { "type": "string" },
+        "description": { "type": "string" },
+        "serial_no": { "type": "string" },
+        "value": { "type": "number" },
+        "delivery_date": { "type": "string" },
+        "delivery_condition": { "type": "string" },
+        "project_branch": { "type": "string" },
+        "image_url": { "type": "string" },
+        "delivered_by": { "type": "string" },
+        "signature_url": { "type": "string" },
+        "status": { "type": "string" },
+        "return_date": { "type": "string" },
+        "return_condition": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "company_id", "employee_id", "type", "delivery_date"]
+    },
+    "HrJournal": {
+      "title": "HrJournal",
+      "description": "HR Worker/Employee Daily Journal",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "date": { "type": "string" },
+        "employee_id": { "type": "string" },
+        "employee_name": { "type": "string" },
+        "project": { "type": "string" },
+        "branch": { "type": "string" },
+        "work_days": { "type": "number" },
+        "work_hours": { "type": "number" },
+        "overtime_hours": { "type": "number" },
+        "daily_rate": { "type": "number" },
+        "overtime_rate": { "type": "number" },
+        "total_entitled": { "type": "number" },
+        "paid_amount": { "type": "number" },
+        "remaining_amount": { "type": "number" },
+        "payment_method": { "type": "string" },
+        "voucher_no": { "type": "string" },
+        "notes": { "type": "string" },
+        "status": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "company_id", "date", "employee_id", "total_entitled"]
+    },
+    "HrDeduction": {
+      "title": "HrDeduction",
+      "description": "HR Employee salary deduction",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "employee_id": { "type": "string" },
+        "employee_name": { "type": "string" },
+        "type": { "type": "string" },
+        "date": { "type": "string" },
+        "amount": { "type": "number" },
+        "days_hours": { "type": "string" },
+        "reason": { "type": "string" },
+        "project_branch": { "type": "string" },
+        "attachments": { "type": "string" },
+        "created_by": { "type": "string" },
+        "approved_by": { "type": "string" },
+        "status": { "type": "string" },
+        "month_applied": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "company_id", "employee_id", "type", "date", "amount"]
+    },
+    "CompanyAsset": {
+      "title": "CompanyAsset",
+      "description": "Company assets like vehicles, real estates, etc",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "model": { "type": "string" },
+        "plate_number_or_title": { "type": "string" },
+        "mileage": { "type": "number" },
+        "status": { "type": "string" },
+        "purchase_date": { "type": "string" },
+        "purchase_value": { "type": "number" },
+        "notes": { "type": "string" },
+        "maintenance_logs": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "company_id", "name", "type", "status"]
+    },
+    "HrPayroll": {
+      "title": "HrPayroll",
+      "description": "HR Employee monthly salary disbursement record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "month": { "type": "string" },
+        "employee_id": { "type": "string" },
+        "employee_name": { "type": "string" },
+        "basic_salary": { "type": "number" },
+        "allowances": { "type": "number" },
+        "journals_total": { "type": "number" },
+        "deductions_total": { "type": "number" },
+        "advances_total": { "type": "number" },
+        "net_salary": { "type": "number" },
+        "payment_method": { "type": "string" },
+        "treasury": { "type": "string" },
+        "voucher_no": { "type": "string" },
+        "status": { "type": "string" },
+        "paid_at": { "type": "string" },
+        "paid_by": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "company_id", "month", "employee_id", "net_salary"]
+    }
+  },
+  "firestore": {
+    "users": {
+      "schema": "User",
+      "description": "ERP permissions and users"
+    },
+    "installments": {
+      "schema": "Installment",
+      "description": "Contracts and payments schedule"
+    },
+    "quotes": {
+      "schema": "Quote",
+      "description": "Client proposals"
+    },
+    "receipts": {
+      "schema": "Receipt",
+      "description": "Receipt vouchers"
+    },
+    "payments": {
+      "schema": "Payment",
+      "description": "Outgoing payments"
+    },
+    "expenses": {
+      "schema": "Expense",
+      "description": "Company material and logistics expenses"
+    },
+    "projects": {
+      "schema": "Project",
+      "description": "Construction and field projects"
+    },
+    "workers": {
+      "schema": "Worker",
+      "description": "Worker logs, salary parameters, and advances"
+    },
+    "sessions": {
+      "schema": "DbSession",
+      "description": "Audit logging data"
+    },
+    "companies": {
+      "schema": "Company",
+      "description": "Company profiles and corporate identities"
+    },
+    "extracts": {
+      "schema": "Extract",
+      "description": "Project progress and payment extracts"
+    },
+    "attendance": {
+      "schema": "Attendance",
+      "description": "Attendance tracking check-in/out records"
+    },
+    "hr_employees": {
+      "schema": "HrEmployee",
+      "description": "HR employee profiles"
+    },
+    "hr_contracts": {
+      "schema": "HrContract",
+      "description": "HR employee historical and current contracts"
+    },
+    "hr_custody": {
+      "schema": "HrCustody",
+      "description": "HR employee custody items"
+    },
+    "hr_journals": {
+      "schema": "HrJournal",
+      "description": "HR worker/employee daily journals"
+    },
+    "hr_deductions": {
+      "schema": "HrDeduction",
+      "description": "HR employee salary deductions"
+    },
+    "company_assets": {
+      "schema": "CompanyAsset",
+      "description": "Company assets like vehicles, real estates, etc"
+    },
+    "hr_payrolls": {
+      "schema": "HrPayroll",
+      "description": "HR Employee monthly salary disbursement records"
+    }
+  }
+}
