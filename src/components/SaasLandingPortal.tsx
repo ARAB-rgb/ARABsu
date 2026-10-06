@@ -24,6 +24,7 @@ interface SaasLandingPortalProps {
     email: string;
     google_id?: string;
     phone: string;
+    role?: "admin" | "cashier" | "employee";
     company_id?: string;
     requested_company_name?: string;
     requested_company_slug?: string;
