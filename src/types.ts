@@ -51,12 +51,40 @@ export interface UserPerms {
   hr_reports_print?: boolean;
 }
 
+export const CASHIER_DEFAULT_PERMS: UserPerms = {
+  region: "",
+  dashboard: true,
+  attendance: true,
+  installmentsView: true,
+  installmentsAdd: true,
+  installmentsEdit: false,
+  installmentsDelete: false,
+  quotes: true,
+  receipts: true,
+  payments: true,
+  expenses: true,
+  treasury: true,
+  financial_reports: false,
+  projects: false,
+  workers: false,
+  companies: false,
+  users: false,
+  sessions: false,
+  print: true,
+  dashTopCards: true,
+  dashCollection: true,
+  dashPulse: false,
+  dashLateClients: true,
+  dashLastReceipts: true,
+  dashUpcomingPaid: true,
+};
+
 export interface User {
   id: string;
   name: string;
   code: string;
   password?: string;
-  role: "admin" | "employee" | "supervisor";
+  role: "admin" | "employee" | "supervisor" | "cashier";
   perms: UserPerms;
   company_perms?: Record<string, UserPerms>;
   worker_id?: string;

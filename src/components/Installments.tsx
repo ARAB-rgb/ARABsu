@@ -1903,11 +1903,13 @@ tr:nth-child(even) td{background:#f8fafc}
     });
 
     return list.sort((a, b) => {
+      const dateA = a.start_date || (a.created_at ? a.created_at.slice(0, 10) : "");
+      const dateB = b.start_date || (b.created_at ? b.created_at.slice(0, 10) : "");
       if (fSort === "date_desc") {
-        return String(b.start_date || "").localeCompare(String(a.start_date || ""));
+        return String(dateB).localeCompare(String(dateA));
       }
       if (fSort === "date_asc") {
-        return String(a.start_date || "").localeCompare(String(b.start_date || ""));
+        return String(dateA).localeCompare(String(dateB));
       }
       if (fSort === "client_asc") {
         return String(a.client || "").localeCompare(String(b.client || ""), "ar");
@@ -2831,25 +2833,31 @@ tr:nth-child(even) td{background:#f8fafc}
             <table className="w-full text-right text-xs md:text-sm border-collapse table-auto">
               <thead>
                 <tr className="bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border-b border-slate-800 text-slate-300">
-                  <th className="py-3 px-3.5 font-black text-amber-400 w-[30%]">
+                  <th className="py-3 px-3.5 font-black text-amber-400 w-[26%]">
                     <div className="flex items-center gap-1.5">
                       <User className="w-4 h-4 text-amber-400 shrink-0" />
                       <span>العميل والعقد</span>
                     </div>
                   </th>
-                  <th className="py-3 px-3 font-black text-slate-200 w-[28%] text-center">
+                  <th className="py-3 px-2.5 font-black text-amber-400 w-[14%] text-center">
+                    <div className="flex items-center justify-center gap-1.5">
+                      <Calendar className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>تاريخ العقد</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-3 font-black text-slate-200 w-[26%] text-center">
                     <div className="flex items-center justify-center gap-1.5">
                       <DollarSign className="w-4 h-4 text-emerald-400 shrink-0" />
                       <span>المبالغ المالية (إجمالي / مستلم / متبقي)</span>
                     </div>
                   </th>
-                  <th className="py-3 px-3 font-black text-center text-slate-300 w-[17%]">
+                  <th className="py-3 px-2 font-black text-center text-slate-300 w-[14%]">
                     <div className="flex items-center justify-center gap-1.5">
                       <Activity className="w-4 h-4 text-blue-400 shrink-0" />
                       <span>حالة السداد والتأخر</span>
                     </div>
                   </th>
-                  <th className="py-3 px-3.5 font-black text-center text-slate-300 w-[25%]">
+                  <th className="py-3 px-3 font-black text-center text-slate-300 w-[20%]">
                     <span>الإجراءات والتفاصيل</span>
                   </th>
                 </tr>
@@ -2898,6 +2906,10 @@ tr:nth-child(even) td{background:#f8fafc}
                             </div>
                             
                             <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                              <span className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/25 px-2 py-0.5 rounded-md font-mono font-bold flex items-center gap-1">
+                                <Calendar className="w-3 h-3 text-amber-400 shrink-0" />
+                                <span>تاريخ: {item.start_date || (item.created_at ? item.created_at.slice(0, 10) : "—")}</span>
+                              </span>
                               <span className="text-[10px] text-slate-300 bg-slate-900/80 px-2 py-0.5 rounded-md border border-slate-800 font-bold">
                                 {item.nationality || "غير محدد"}
                               </span>
@@ -2919,6 +2931,22 @@ tr:nth-child(even) td{background:#f8fafc}
                               }`}>
                                 {itemClassification}
                               </span>
+                            </div>
+                          </td>
+
+                          {/* Dedicated Contract Date Cell */}
+                          <td className="py-3.5 px-2.5 align-middle text-center">
+                            <div className="flex flex-col items-center justify-center gap-1">
+                              <span className="inline-flex items-center gap-1 text-xs font-mono font-black text-amber-300 bg-amber-500/10 border border-amber-500/25 px-2.5 py-1 rounded-xl shadow-inner whitespace-nowrap">
+                                <Calendar className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                <span>{item.start_date || (item.created_at ? item.created_at.slice(0, 10) : "—")}</span>
+                              </span>
+                              {item.end_date && (
+                                <span className="text-[10px] text-slate-400 font-mono flex items-center justify-center gap-1">
+                                  <span className="text-slate-500">إلى:</span>
+                                  <span>{item.end_date}</span>
+                                </span>
+                              )}
                             </div>
                           </td>
 
@@ -3144,7 +3172,7 @@ tr:nth-child(even) td{background:#f8fafc}
                         {/* Dropdown Sub-Row containing all remaining fields */}
                         {isExpanded && (
                           <tr className="bg-slate-900/80 border-b border-amber-500/20">
-                            <td colSpan={4} className="p-4">
+                            <td colSpan={5} className="p-4">
                               <div className="bg-slate-950/90 border border-amber-500/25 rounded-2xl p-4 shadow-xl space-y-3 text-right">
                                 <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
                                   <div className="flex items-center gap-2">
@@ -3282,7 +3310,7 @@ tr:nth-child(even) td{background:#f8fafc}
                   })
                 ) : (
                   <tr>
-                    <td colSpan={4} className="py-12 text-center text-slate-500 font-bold text-sm">
+                    <td colSpan={5} className="py-12 text-center text-slate-500 font-bold text-sm">
                       <div className="flex flex-col items-center justify-center gap-2">
                         <span className="text-3xl">📭</span>
                         <span>لا توجد أي عقود مسجلة ومطابقة لشروط البحث والفلترة.</span>
@@ -3409,8 +3437,8 @@ tr:nth-child(even) td{background:#f8fafc}
                     {/* Details Grid (All remaining fields visible) */}
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
                       <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-850">
-                        <span className="block text-[10px] text-slate-400">📅 تاريخ البداية:</span>
-                        <span className="font-mono font-bold text-white mt-0.5 block">{item.start_date || "—"}</span>
+                        <span className="block text-[10px] text-amber-400 font-bold">📅 تاريخ العقد:</span>
+                        <span className="font-mono font-black text-amber-300 mt-0.5 block">{item.start_date || (item.created_at ? item.created_at.slice(0, 10) : "—")}</span>
                       </div>
                       <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-850">
                         <span className="block text-[10px] text-slate-400">⏱️ آخر سداد:</span>

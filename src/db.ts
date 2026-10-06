@@ -44,8 +44,50 @@ export let supabase = createClient(initialCreds.url, initialCreds.key);
 // Track whether Supabase is healthy or quota restricted
 export let isSupabaseHealthy = true;
 
+export type ActiveDatabaseType = "supabase" | "firestore";
+
+export interface DatabaseStatus {
+  activeDb: ActiveDatabaseType;
+  isSupabaseHealthy: boolean;
+  lastChecked: Date;
+  details: string;
+}
+
+const dbStatusListeners: Set<(status: DatabaseStatus) => void> = new Set();
+
+export function getDatabaseStatus(): DatabaseStatus {
+  return {
+    activeDb: isSupabaseHealthy ? "supabase" : "firestore",
+    isSupabaseHealthy,
+    lastChecked: new Date(),
+    details: isSupabaseHealthy
+      ? "متصل بقاعدة بيانات Supabase (المصدر الأساسي)"
+      : "متصل بقاعدة بيانات Cloud Firestore (المصدر الاحتياطي النشط)",
+  };
+}
+
+export function notifyDbStatus() {
+  const current = getDatabaseStatus();
+  dbStatusListeners.forEach((fn) => {
+    try {
+      fn(current);
+    } catch (e) {
+      console.warn("DB listener error:", e);
+    }
+  });
+}
+
+export function subscribeDatabaseStatus(fn: (status: DatabaseStatus) => void) {
+  dbStatusListeners.add(fn);
+  fn(getDatabaseStatus());
+  return () => {
+    dbStatusListeners.delete(fn);
+  };
+}
+
 export function setSupabaseHealthyState(state: boolean) {
   isSupabaseHealthy = state;
+  notifyDbStatus();
 }
 
 export function isQuotaError(error: any): boolean {
@@ -67,20 +109,24 @@ export async function checkSupabaseHealth(): Promise<boolean> {
       if (isQuotaError(error)) {
         console.warn("⚠️ Supabase has restriction limits (egress quota limits). Falling back to Firestore database.", error.message);
         isSupabaseHealthy = false;
+        notifyDbStatus();
         return false;
       }
       // If other database error, maybe table is missing or something, but connection is alive.
       // If it is just invalid API Key/URL, it might be unauthorized
       isSupabaseHealthy = true; 
+      notifyDbStatus();
       return true;
     } else {
       isSupabaseHealthy = true;
+      notifyDbStatus();
       console.log("🟢 Supabase connected successfully as active source of truth!");
       return true;
     }
   } catch (err: any) {
     console.warn("⚠️ Supabase connection error. Active Firestore database fallback will be used.", err?.message || err);
     isSupabaseHealthy = false;
+    notifyDbStatus();
     return false;
   }
 }
@@ -415,6 +461,7 @@ class SupabaseEmulationChain {
       } catch (err: any) {
         console.warn("⚠️ Real Supabase query threw exception, falling back to Firestore:", err);
         isSupabaseHealthy = false;
+        notifyDbStatus();
         // Let it fall through to Firestore fallback
       }
     }

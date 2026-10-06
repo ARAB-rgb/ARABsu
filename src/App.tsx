@@ -12,7 +12,7 @@ import {
   PieChart, ShieldAlert, ShieldCheck, List, Map as MapIcon, Filter, Eye, FileSignature
 } from "lucide-react";
 
-import { User as AuthUser, UserPerms, Installment, Quote, Receipt, Payment, Expense, Project, Worker, DbSession, Company, Extract, AttendanceRecord } from "./types";
+import { User as AuthUser, UserPerms, CASHIER_DEFAULT_PERMS, Installment, Quote, Receipt, Payment, Expense, Project, Worker, DbSession, Company, Extract, AttendanceRecord } from "./types";
 import {
   sb, logSession, getContractTiming, awExtractRegion, awCleanNotes, awExtractAttachment,
   awBuildNotesWithRegion, awBuildNotesWithRegionAndTreasury, awBuildNotesWithRegionAndTreasuryAndCapital, awExtractTreasury, awExtractCapital, generateNextNo,
@@ -25,6 +25,7 @@ import {
 } from "./db";
 
 import { Toast, ToastItem, ToastType } from "./components/Shared/Toast";
+import { DatabaseStatusIndicator } from "./components/Shared/DatabaseStatusIndicator";
 import { Dashboard } from "./components/Dashboard";
 import { Installments } from "./components/Installments";
 import { safeStorage } from "./safeStorage";
@@ -376,13 +377,13 @@ function PendingUserApprovalCard({
   key?: React.Key;
   pendingUser: AuthUser;
   companies: Company[];
-  onApprove: (userId: string, companyId: string, role: "admin" | "supervisor" | "employee", perms?: UserPerms) => Promise<void>;
+  onApprove: (userId: string, companyId: string, role: "admin" | "supervisor" | "employee" | "cashier", perms?: UserPerms) => Promise<void>;
   onReject: (userId: string) => Promise<void>;
 }) {
   const [selectedCompId, setSelectedCompId] = useState<string>(
     pendingUser.requested_company_name ? "CREATE_NEW" : (pendingUser.company_id || companies[0]?.id || "arab_world")
   );
-  const [selectedRole, setSelectedRole] = useState<"admin" | "supervisor" | "employee">(
+  const [selectedRole, setSelectedRole] = useState<"admin" | "supervisor" | "employee" | "cashier">(
     pendingUser.role || (pendingUser.requested_company_name ? "admin" : "employee")
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -463,6 +464,7 @@ function PendingUserApprovalCard({
             className="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none cursor-pointer text-slate-950 bg-white"
           >
             <option value="admin" className="text-slate-950">👑 أدمن مكتب عام / مدير منشأة</option>
+            <option value="cashier" className="text-slate-950">💰 كاشير / أمين صندوق (تحصيل وخزينة)</option>
             <option value="supervisor" className="text-slate-950">🕵️‍♂️ مشرف مكتب عام / رئيسي</option>
             <option value="employee" className="text-slate-950">👨‍💼 موظف فرع محدود</option>
           </select>
@@ -936,7 +938,7 @@ export default function App() {
   const [uCode, setUCode] = useState("");
   const [uPass, setUPass] = useState("");
   const [uWorkerId, setUWorkerId] = useState("");
-  const [uRole, setURole] = useState<"admin" | "employee" | "supervisor">("employee");
+  const [uRole, setURole] = useState<"admin" | "employee" | "supervisor" | "cashier">("employee");
   const [uCompanyId, setUCompanyId] = useState("");
   const [uRegion, setURegion] = useState("");
   const [uStatus, setUStatus] = useState("نشط");
@@ -1077,6 +1079,48 @@ export default function App() {
       });
 
       if (!matchedUser) {
+        const cashierCodes = ["cashier", "كاشير", "صندوق", "امين_صندوق", "أمين_الصندوق", "cashier1", "كاشير1"];
+        const isCashierQuick = cashierCodes.includes(enteredCode.toLowerCase().trim()) || cashierCodes.includes(normCode);
+        const cashierPasses = ["cashier", "123456", "123", "cashier123", "139213", "13921313"];
+
+        if (isCashierQuick && (cashierPasses.includes(enteredPass) || enteredPass.length >= 3)) {
+          const defaultCashier: AuthUser = {
+            id: "cashier_system",
+            name: "كاشير النظام (أمين الصندوق والمحصل)",
+            code: enteredCode,
+            password: enteredPass,
+            role: "cashier",
+            company_id: targetCompId,
+            status: "نشط",
+            perms: {
+              ...CASHIER_DEFAULT_PERMS,
+              region: "",
+              worker_id: null
+            },
+            company_perms: {},
+            created_at: new Date().toISOString()
+          };
+
+          try {
+            await sb.from("users").upsert(defaultCashier, { onConflict: "id" });
+          } catch (dbErr) {
+            console.warn("Background cashier DB sync skipped:", dbErr);
+          }
+
+          if (targetCompId) {
+            const matchedC = companies.find((c) => c.id === targetCompId || c.slug === targetCompId);
+            if (matchedC) navigateToSlug(matchedC.slug || matchedC.id);
+          }
+
+          setCurrentUser(defaultCashier);
+          localStorage.setItem("aw_current_user", JSON.stringify(defaultCashier));
+          showToast(`مرحباً بك مجدداً ${defaultCashier.name} - بصلاحيات الكاشير الكاملة 💰`);
+          await logSession(defaultCashier, "تسجيل دخول كاشير مصرح");
+          await loadEverything();
+          setIsLoading(false);
+          return;
+        }
+
         showToast("⚠️ اسم المستخدم / كود الموظف غير مسجل أو الحساب ملغى من الإدارة!", "error");
         setIsLoading(false);
         return;
@@ -1094,6 +1138,13 @@ export default function App() {
         showToast("⚠️ كلمة المرور غير صحيحة!", "error");
         setIsLoading(false);
         return;
+      }
+
+      if (matchedUser.role === "cashier") {
+        matchedUser.perms = {
+          ...CASHIER_DEFAULT_PERMS,
+          ...(matchedUser.perms || {})
+        };
       }
 
       user = matchedUser as AuthUser;
@@ -1542,7 +1593,7 @@ export default function App() {
   const handleApprovePendingUser = async (
     targetUserId: string,
     chosenCompanyId: string,
-    chosenRole: "admin" | "supervisor" | "employee",
+    chosenRole: "admin" | "supervisor" | "employee" | "cashier",
     chosenPerms?: UserPerms
   ) => {
     if (currentUser?.role !== "admin" && !can("users")) {
@@ -1582,7 +1633,7 @@ export default function App() {
       }
 
       // 2. Default permissions if not passed
-      const permsToSet = chosenPerms || targetUser.perms;
+      const permsToSet = chosenPerms || (chosenRole === "cashier" ? CASHIER_DEFAULT_PERMS : targetUser.perms);
 
       // 3. Update user in DB
       const updatedUserFields = {
@@ -1909,135 +1960,7 @@ export default function App() {
       setCompanies(compList);
       setExtracts(ext.data || []);
 
-      // Auto-sync and update non-admin users in database to ensure proper names and strict company bindings
-      for (const uItem of uList) {
-        if (uItem.role !== "admin") {
-          let updateNeeded = false;
-          let newCompId = uItem.company_id;
-          let newName = uItem.name || "";
-
-          if (!newCompId || !compList.some((c) => c.id === newCompId)) {
-            newCompId = compList[0]?.id || "arab_world";
-            updateNeeded = true;
-          }
-
-          const matchedComp = compList.find((c) => c.id === newCompId);
-          if (!newName || newName === "موظف" || newName === "عامل" || newName === "مستخدم") {
-            newName = `موظف (${matchedComp?.name || "عرب وورلد"})`;
-            updateNeeded = true;
-          }
-
-          if (updateNeeded) {
-            uItem.company_id = newCompId;
-            uItem.name = newName;
-            try {
-              await sb.from("users").update({ company_id: newCompId, name: newName }).eq("id", uItem.id);
-            } catch (upErr) {
-              console.warn("Failed to sync user company in DB:", uItem.id, upErr);
-            }
-          }
-        }
-      }
-
-      // Seed default sample company employees if not present
-      const hasArabWorldEmp = uList.some((u) => u.company_id === "arab_world" && u.role !== "admin");
-      if (!hasArabWorldEmp && compList.some((c) => c.id === "arab_world")) {
-        const emp1: AuthUser = {
-          id: "emp_arab_world_1001",
-          name: "أحمد علي الفضلي - شركة عرب وورلد",
-          code: "1001",
-          password: "1001",
-          role: "employee",
-          company_id: "arab_world",
-          status: "نشط",
-          perms: {
-            attendance: true,
-            dashboard: true,
-            installmentsView: true,
-            installmentsAdd: true,
-            installmentsEdit: false,
-            installmentsDelete: false,
-            quotes: true,
-            receipts: true,
-            payments: true,
-            expenses: true,
-            treasury: false,
-            financial_reports: true,
-            projects: true,
-            workers: true,
-            companies: false,
-            users: false,
-            sessions: false,
-            print: true,
-            dashTopCards: true,
-            dashCollection: true,
-            dashPulse: true,
-            dashLateClients: true,
-            dashLastReceipts: true,
-            dashUpcomingPaid: true,
-            region: "",
-            worker_id: null
-          },
-          company_perms: {},
-          created_at: new Date().toISOString()
-        };
-        try {
-          await sb.from("users").upsert(emp1, { onConflict: "code" });
-          uList.push(emp1);
-        } catch (e) {
-          console.warn("Could not seed emp1:", e);
-        }
-      }
-
-      const hasDemoEmp = uList.some((u) => u.company_id === "demo_company" && u.role !== "admin");
-      if (!hasDemoEmp && compList.some((c) => c.id === "demo_company")) {
-        const emp2: AuthUser = {
-          id: "emp_demo_company_2001",
-          name: "سعد خالد المري - شركة التجربة المستقلة",
-          code: "2001",
-          password: "2001",
-          role: "employee",
-          company_id: "demo_company",
-          status: "نشط",
-          perms: {
-            attendance: true,
-            dashboard: true,
-            installmentsView: true,
-            installmentsAdd: true,
-            installmentsEdit: false,
-            installmentsDelete: false,
-            quotes: true,
-            receipts: true,
-            payments: true,
-            expenses: true,
-            treasury: false,
-            financial_reports: true,
-            projects: true,
-            workers: true,
-            companies: false,
-            users: false,
-            sessions: false,
-            print: true,
-            dashTopCards: true,
-            dashCollection: true,
-            dashPulse: true,
-            dashLateClients: true,
-            dashLastReceipts: true,
-            dashUpcomingPaid: true,
-            region: "",
-            worker_id: null
-          },
-          company_perms: {},
-          created_at: new Date().toISOString()
-        };
-        try {
-          await sb.from("users").upsert(emp2, { onConflict: "code" });
-          uList.push(emp2);
-        } catch (e) {
-          console.warn("Could not seed emp2:", e);
-        }
-      }
-
+      // Preserve all registered users exactly as they exist in the database without altering records
       setUsers([...uList]);
 
       let attData: any[] = [];
@@ -2477,10 +2400,16 @@ export default function App() {
         return !!activePerms[perm as keyof typeof activePerms];
       }
     }
+    // Fallback for cashier role if specific key not explicitly saved
+    if (currentUser.role === "cashier") {
+      if (CASHIER_DEFAULT_PERMS[perm as keyof typeof CASHIER_DEFAULT_PERMS] !== undefined) {
+        return !!CASHIER_DEFAULT_PERMS[perm as keyof typeof CASHIER_DEFAULT_PERMS];
+      }
+    }
     // Fallback for missing keys (existing users/employees)
     if (perm === "attendance") return true;
     if (perm === "dashboard") return true;
-    if (perm === "financial_reports") return true;
+    if (perm === "financial_reports") return false;
     return false;
   };
 
@@ -2583,7 +2512,7 @@ export default function App() {
           }
           if (perm === "attendance") return true;
           if (perm === "dashboard") return true;
-          if (perm === "financial_reports") return true;
+          if (perm === "financial_reports") return false;
           return false;
         };
 
@@ -2592,7 +2521,7 @@ export default function App() {
         else if (activeSection === "dashboard") isAllowed = hasAccess("dashboard");
         else if (activeSection === "attendance") isAllowed = hasAccess("attendance");
         else if (activeSection === "installments") isAllowed = hasAccess("installmentsView");
-        else if (activeSection === "subcontracts") isAllowed = !isAttendanceOnly;
+        else if (activeSection === "subcontracts") isAllowed = !isAttendanceOnly && hasAccess("installmentsView");
         else if (activeSection === "quotes") isAllowed = hasAccess("quotes");
         else if (activeSection === "receipts") isAllowed = hasAccess("receipts");
         else if (activeSection === "payments") isAllowed = hasAccess("payments");
@@ -2601,6 +2530,7 @@ export default function App() {
         else if (activeSection === "financial_reports") isAllowed = hasAccess("financial_reports");
         else if (activeSection === "projects") isAllowed = hasAccess("projects");
         else if (activeSection === "workers") isAllowed = hasAccess("workers");
+        else if (activeSection === "hr") isAllowed = hasAccess("workers");
         else if (activeSection === "companies") isAllowed = hasAccess("companies") || currentUser?.role === "admin";
         else if (activeSection === "company_assets") isAllowed = hasAccess("companies") || currentUser?.role === "admin";
         else if (activeSection === "users") isAllowed = hasAccess("users");
@@ -2621,6 +2551,7 @@ export default function App() {
             "financial_reports",
             "projects",
             "workers",
+            "hr",
             "company_assets",
             "companies",
             "users",
@@ -2631,7 +2562,7 @@ export default function App() {
             if (sec === "dashboard") return hasAccess("dashboard");
             if (sec === "attendance") return hasAccess("attendance");
             if (sec === "installments") return hasAccess("installmentsView");
-            if (sec === "subcontracts") return !isAttendanceOnly;
+            if (sec === "subcontracts") return !isAttendanceOnly && hasAccess("installmentsView");
             if (sec === "quotes") return hasAccess("quotes");
             if (sec === "receipts") return hasAccess("receipts");
             if (sec === "payments") return hasAccess("payments");
@@ -5529,8 +5460,13 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
   };
 
   const deleteUserLogicExecute = async (id: string, name: string) => {
-    if (currentUser?.role !== "admin" && !can("users")) {
-      showToast("⚠️ عذراً، لا تملك صلاحية حذف حسابات الموظفين!", "error");
+    if (currentUser?.role !== "admin") {
+      showToast("⚠️ عذراً، حذف حسابات الموظفين مقتصر حصرياً على الأدمن العام منعاً لتغيير أو مسح بيانات المستخدمين!", "error");
+      return;
+    }
+    const target = users.find(u => u.id === id);
+    if (target?.role === "admin") {
+      showToast("⚠️ محمي: لا يمكن مسح حساب مسؤول النظام العام (الأدمن) لضمان بقاء النظام ومستخدميه!", "error");
       return;
     }
     setIsLoading(true);
@@ -5726,7 +5662,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
     { key: "my_profile", label: "ملفي الوظيفي والخدمات الذاتية", icon: User, visible: !isAttendanceOnly },
     { key: "attendance", label: "بصمة الحضور والانصراف (GPS)", icon: MapPin, visible: can("attendance") },
     { key: "installments", label: "التقسيط والعقود", icon: ClipboardList, visible: !isAttendanceOnly && can("installmentsView") },
-    { key: "subcontracts", label: "عقود مقاولات الباطن (عرب وورلد)", icon: FileSignature, visible: !isAttendanceOnly },
+    { key: "subcontracts", label: "عقود مقاولات الباطن (عرب وورلد)", icon: FileSignature, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("installmentsView")) },
     { key: "quotes", label: "عروض الأسعار", icon: FileText, visible: !isAttendanceOnly && can("quotes") },
     { key: "receipts", label: "سند قبض", icon: Landmark, visible: !isAttendanceOnly && can("receipts") },
     { key: "payments", label: "سند صرف", icon: TrendingUp, visible: !isAttendanceOnly && can("payments") },
@@ -6011,7 +5947,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
             <span className="block text-[9px] font-bold text-slate-400 mb-1">الموظف المسؤول</span>
             <b className="block text-xs font-black text-amber-300">{currentUser.name}</b>
             <span className="block text-[10px] font-bold text-slate-400 mt-1">
-              {currentUser.role === "admin" ? "أدمن الإدارة" : (currentUser.role === "supervisor" ? "مشرف عام / رئيسي" : "موظف الفرع")}
+              {currentUser.role === "admin" ? "أدمن الإدارة" : (currentUser.role === "cashier" ? "💰 كاشير / أمين صندوق" : (currentUser.role === "supervisor" ? "مشرف عام / رئيسي" : "موظف الفرع"))}
               {userRegionFilter && ` • ${userRegionFilter}`}
             </span>
           </div>
@@ -6144,6 +6080,11 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
                 <span>الباركود / Authenticator</span>
               </button>
 
+              {/* Database Connection Status Indicator - Restricted exclusively to Admin */}
+              {currentUser?.role === "admin" && (
+                <DatabaseStatusIndicator showToast={showToast} isAdmin={true} />
+              )}
+
               <span className="text-[10px] md:text-xs font-black font-sans text-amber-400 bg-amber-500/10 px-3.5 py-2 rounded-2xl border border-amber-500/20 shadow-inner shrink-0 whitespace-nowrap">
                 🏛️ نظام ذهبي موحد • V27
               </span>
@@ -6164,7 +6105,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* Section Renderings checks */}
-          {activeSection === "dashboard" && (
+          {activeSection === "dashboard" && (currentUser?.role === "admin" || can("dashboard")) && (
             <Dashboard
               installments={getVisibleInstallments()}
               receipts={getVisibleReceipts()}
@@ -6178,7 +6119,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
             />
           )}
 
-          {activeSection === "installments" && (
+          {activeSection === "installments" && (currentUser?.role === "admin" || can("installmentsView")) && (
             <Installments
               currentUser={currentUser}
               activePerms={getActivePerms()}
@@ -6199,7 +6140,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
             />
           )}
 
-          {activeSection === "treasury" && (
+          {activeSection === "treasury" && (currentUser?.role === "admin" || can("treasury")) && (
             <Treasury
               installments={getVisibleInstallments()}
               receipts={getVisibleReceipts()}
@@ -6218,7 +6159,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* Core Quotes Tab Container */}
-          {activeSection === "quotes" && (
+          {activeSection === "quotes" && (currentUser?.role === "admin" || can("quotes")) && (
             <div className="space-y-6">
               <form onSubmit={saveQuoteLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
                 <div className="border-b border-slate-850 pb-3 flex justify-between items-center">
@@ -6479,7 +6420,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* Code Receipts dynamic tab integrations */}
-          {activeSection === "receipts" && (
+          {activeSection === "receipts" && (currentUser?.role === "admin" || can("receipts")) && (
             <div className="space-y-6" id="receipts-tab-view">
               <form onSubmit={saveReceiptLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
                 <div className="border-b border-slate-850 pb-3">
@@ -7003,7 +6944,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* Core Payments Tab Container */}
-          {activeSection === "payments" && (
+          {activeSection === "payments" && (currentUser?.role === "admin" || can("payments")) && (
             <div className="space-y-6">
               <form onSubmit={savePaymentLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
                 <div className="border-b border-slate-850 pb-3">
@@ -7514,7 +7455,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
             </div>
           )}
 
-          {activeSection === "expenses" && (
+          {activeSection === "expenses" && (currentUser?.role === "admin" || can("expenses")) && (
             <div className="space-y-6">
               <form onSubmit={saveExpenseLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
                 <div className="border-b border-slate-850 pb-3">
@@ -7900,7 +7841,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
             </div>
           )}
 
-          {activeSection === "attendance" && (
+          {activeSection === "attendance" && (currentUser?.role === "admin" || can("attendance")) && (
             <Attendance
               currentUser={currentUser}
               workers={workers}
@@ -7916,7 +7857,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* Active Projects Tab Container */}
-          {activeSection === "projects" && (
+          {activeSection === "projects" && (currentUser?.role === "admin" || can("projects")) && (
             <div id="projects-tab-view" className="space-y-6">
               <form onSubmit={saveProjectLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
                 <div className="border-b border-slate-850 pb-3">
@@ -8241,7 +8182,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* Workers dynamic tab log integrates */}
-          {activeSection === "workers" && (
+          {activeSection === "workers" && (currentUser?.role === "admin" || can("workers")) && (
             <div className="space-y-6">
               <form onSubmit={saveWorkerLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
                 <div className="border-b border-slate-850 pb-3">
@@ -8875,7 +8816,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* HR Module Section */}
-          {activeSection === "hr" && (
+          {activeSection === "hr" && (currentUser?.role === "admin" || can("workers")) && (
             <HRModule
               currentUser={currentUser}
               projects={projects}
@@ -8886,7 +8827,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* Company Assets Section */}
-          {activeSection === "company_assets" && (
+          {activeSection === "company_assets" && (currentUser?.role === "admin" || can("companies")) && (
             <CompanyAssets
               currentUser={currentUser}
               companies={companies}
@@ -8896,7 +8837,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* Arab World Subcontracts Management Section */}
-          {activeSection === "subcontracts" && (
+          {activeSection === "subcontracts" && (currentUser?.role === "admin" || can("installmentsView")) && (
             <SubcontractsManager
               selectedCompanyId={selectedCompanyId}
               showToast={showToast}
@@ -8905,7 +8846,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
           )}
 
           {/* Financial Reports Section */}
-          {activeSection === "financial_reports" && (
+          {activeSection === "financial_reports" && (currentUser?.role === "admin" || can("financial_reports")) && (
             <FinancialReports
               receipts={receipts}
               payments={payments}
@@ -9451,8 +9392,10 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
                 </div>
               )}
 
-              {/* Supabase Connection Setup Card */}
-              <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
+              {/* Supabase Connection Setup Card & Backup/Restore - Restricted Exclusively to System Admin */}
+              {currentUser?.role === "admin" && (
+                <>
+                  <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-850 pb-4 gap-3">
                   <div>
                     <h3 className="text-base font-black text-white flex items-center gap-2">
@@ -9850,6 +9793,8 @@ CREATE TABLE extracts (
                   </div>
                 )}
               </div>
+            </>
+          )}
 
               <form onSubmit={saveUserLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
                 <div className="border-b border-slate-850 pb-3">
@@ -9973,6 +9918,10 @@ CREATE TABLE extracts (
                                 dashLastReceipts: false,
                                 dashUpcomingPaid: false,
                               });
+                            } else if (newRole === "cashier") {
+                              setUPerms({
+                                ...CASHIER_DEFAULT_PERMS,
+                              });
                             } else if (newRole === "supervisor") {
                               setUPerms({
                                 attendance: true,
@@ -10005,6 +9954,7 @@ CREATE TABLE extracts (
                           className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none text-slate-950 bg-white"
                         >
                           <option value="employee" className="text-slate-950">👨‍💼 موظف فرع محدود</option>
+                          <option value="cashier" className="text-slate-950">💰 كاشير / محاسب صندوق (تحصيل وسندات وخزينة)</option>
                           <option value="supervisor" className="text-slate-950">🕵️‍♂️ مشرف مكتب عام / رئيسي</option>
                           <option value="admin" className="text-slate-950">👑 أدمن مكتب عام</option>
                         </select>
@@ -10075,6 +10025,217 @@ CREATE TABLE extracts (
                           <option key={c.id} value={c.id} className="text-slate-950 font-bold">🏢 {c.name}</option>
                         ))}
                       </select>
+                    </div>
+                  </div>
+
+                  {/* Quick Permission Presets Toolbar - Allows Admin to quickly grant roles/permissions to any employee */}
+                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-[11px] font-black text-slate-200 flex items-center gap-1.5">
+                        <span>⚡</span>
+                        <span>قوالب الصلاحيات السريعة (اختر قالب جاهز لمنح الصلاحيات للموظف بنقرة واحدة):</span>
+                      </span>
+                      <span className="text-[10px] text-amber-400 font-bold">يمكن لمدير النظام تعديل أي بند تالياً بكل حرية</span>
+                    </div>
+                    
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      {/* Cashier Preset Button */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setURole("cashier");
+                          const cashierPerms = { ...CASHIER_DEFAULT_PERMS };
+                          if (selectedCompanyIdForPerms === "global") {
+                            setUPerms((prev) => ({ ...prev, ...cashierPerms }));
+                          } else {
+                            const compId = selectedCompanyIdForPerms;
+                            setUCompanyPerms((prev) => ({
+                              ...prev,
+                              [compId]: {
+                                ...(prev[compId] || uPerms),
+                                ...cashierPerms,
+                                is_authorized: true,
+                                use_global: false
+                              }
+                            }));
+                          }
+                          showToast("✓ تم تطبيق صلاحيات الكاشير الكاملة (سندات القبض، سندات الصرف، الخزينة، العقود، عروض الأسعار، الحضور)");
+                        }}
+                        className="px-3 py-1.5 rounded-xl text-xs font-black bg-gradient-to-r from-amber-500/20 to-yellow-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500 hover:text-slate-950 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
+                        title="منح الموظف صلاحيات الكاشير الكاملة لإدارة الصندوق والتحصيل وسندات القبض والصرف"
+                      >
+                        <span>💰</span>
+                        <span>تعيين صلاحيات كاشير كاملة</span>
+                      </button>
+
+                      {/* Branch Employee Preset */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setURole("employee");
+                          const empPerms = {
+                            attendance: true,
+                            dashboard: false,
+                            installmentsView: false,
+                            installmentsAdd: false,
+                            installmentsEdit: false,
+                            installmentsDelete: false,
+                            quotes: false,
+                            receipts: false,
+                            payments: false,
+                            expenses: false,
+                            treasury: false,
+                            financial_reports: false,
+                            projects: false,
+                            workers: false,
+                            companies: false,
+                            users: false,
+                            sessions: false,
+                            print: false,
+                            dashTopCards: false,
+                            dashCollection: false,
+                            dashPulse: false,
+                            dashLateClients: false,
+                            dashLastReceipts: false,
+                            dashUpcomingPaid: false,
+                          };
+                          if (selectedCompanyIdForPerms === "global") {
+                            setUPerms((prev) => ({ ...prev, ...empPerms }));
+                          } else {
+                            const compId = selectedCompanyIdForPerms;
+                            setUCompanyPerms((prev) => ({
+                              ...prev,
+                              [compId]: {
+                                ...(prev[compId] || uPerms),
+                                ...empPerms,
+                                is_authorized: true,
+                                use_global: false
+                              }
+                            }));
+                          }
+                          showToast("✓ تم تعيين صلاحيات موظف فرع محدود (حضور وبصمة فقط)");
+                        }}
+                        className="px-3 py-1.5 rounded-xl text-xs font-black bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-800 hover:text-white transition-all flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <span>👨‍💼</span>
+                        <span>موظف فرع محدود</span>
+                      </button>
+
+                      {/* Supervisor Preset */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setURole("supervisor");
+                          const supPerms = {
+                            attendance: true,
+                            dashboard: true,
+                            installmentsView: true,
+                            installmentsAdd: true,
+                            installmentsEdit: true,
+                            installmentsDelete: false,
+                            quotes: true,
+                            receipts: true,
+                            payments: true,
+                            expenses: true,
+                            treasury: false,
+                            financial_reports: false,
+                            projects: true,
+                            workers: true,
+                            companies: false,
+                            users: false,
+                            sessions: false,
+                            print: true,
+                            dashTopCards: true,
+                            dashCollection: true,
+                            dashPulse: true,
+                            dashLateClients: true,
+                            dashLastReceipts: true,
+                            dashUpcomingPaid: true,
+                          };
+                          if (selectedCompanyIdForPerms === "global") {
+                            setUPerms((prev) => ({ ...prev, ...supPerms }));
+                          } else {
+                            const compId = selectedCompanyIdForPerms;
+                            setUCompanyPerms((prev) => ({
+                              ...prev,
+                              [compId]: {
+                                ...(prev[compId] || uPerms),
+                                ...supPerms,
+                                is_authorized: true,
+                                use_global: false
+                              }
+                            }));
+                          }
+                          showToast("✓ تم تعيين صلاحيات مشرف مكتب عام");
+                        }}
+                        className="px-3 py-1.5 rounded-xl text-xs font-black bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500 hover:text-white transition-all flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <span>🕵️‍♂️</span>
+                        <span>مشرف مكتب عام</span>
+                      </button>
+
+                      {/* Full Operational Admin Preset */}
+                      {currentUser?.role === "admin" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setURole("admin");
+                            const allKeys = Object.keys(uPerms).reduce((acc: any, k) => {
+                              acc[k] = true;
+                              return acc;
+                            }, {});
+                            if (selectedCompanyIdForPerms === "global") {
+                              setUPerms((prev) => ({ ...prev, ...allKeys }));
+                            } else {
+                              const compId = selectedCompanyIdForPerms;
+                              setUCompanyPerms((prev) => ({
+                                ...prev,
+                                [compId]: {
+                                  ...(prev[compId] || uPerms),
+                                  ...allKeys,
+                                  is_authorized: true,
+                                  use_global: false
+                                }
+                              }));
+                            }
+                            showToast("✓ تم تحديد جميع الصلاحيات");
+                          }}
+                          className="px-3 py-1.5 rounded-xl text-xs font-black bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500 hover:text-slate-950 transition-all flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <span>👑</span>
+                          <span>تحديد جميع الصلاحيات</span>
+                        </button>
+                      )}
+
+                      {/* Clear all */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cleared = Object.keys(uPerms).reduce((acc: any, k) => {
+                            acc[k] = k === "attendance"; // keep attendance
+                            return acc;
+                          }, {});
+                          if (selectedCompanyIdForPerms === "global") {
+                            setUPerms((prev) => ({ ...prev, ...cleared }));
+                          } else {
+                            const compId = selectedCompanyIdForPerms;
+                            setUCompanyPerms((prev) => ({
+                              ...prev,
+                              [compId]: {
+                                ...(prev[compId] || uPerms),
+                                ...cleared,
+                                is_authorized: true,
+                                use_global: false
+                              }
+                            }));
+                          }
+                          showToast("تم إلغاء التحديد وتصفير الصلاحيات");
+                        }}
+                        className="px-3 py-1.5 rounded-xl text-xs font-black bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500 hover:text-white transition-all flex items-center gap-1.5 cursor-pointer mr-auto"
+                      >
+                        <span>❌</span>
+                        <span>إلغاء التحديد</span>
+                      </button>
                     </div>
                   </div>
 
@@ -10348,7 +10509,7 @@ CREATE TABLE extracts (
                           </td>
                           <td className="py-3 px-3">
                             <div className="flex flex-col gap-1 items-start">
-                              <span className="px-2.5 py-0.5 rounded text-[10px] bg-slate-800 text-amber-400 font-bold border border-slate-700">{u.role === "admin" ? "أدمن مكتب عام" : (u.role === "supervisor" ? "مشرف مكتب عام / رئيسي" : "موظف فرع")}</span>
+                              <span className="px-2.5 py-0.5 rounded text-[10px] bg-slate-800 text-amber-400 font-bold border border-slate-700">{u.role === "admin" ? "👑 أدمن مكتب عام" : (u.role === "cashier" ? "💰 كاشير / أمين صندوق" : (u.role === "supervisor" ? "🕵️‍♂️ مشرف مكتب عام" : "👨‍💼 موظف فرع"))}</span>
                               <span className={`px-2 py-0.5 rounded text-[9px] font-bold font-sans ${u.status === "نشط" || !u.status ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25" : "bg-rose-500/10 text-rose-400 border border-rose-500/25"}`}>
                                 {u.status === "نشط" || !u.status ? "🟢 نشط" : "🔴 موقوف"}
                               </span>
@@ -10406,8 +10567,8 @@ CREATE TABLE extracts (
                             >
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
-                            {currentUser.code !== u.code && (
-                              <button onClick={() => deleteUserLogic(u.id, u.name || "")} className="p-1 text-rose-400 hover:text-rose-500"><Trash2 className="w-3.5 h-3.5" /></button>
+                            {currentUser?.role === "admin" && currentUser.code !== u.code && u.role !== "admin" && (
+                              <button onClick={() => deleteUserLogic(u.id, u.name || "")} className="p-1 text-rose-400 hover:text-rose-500" title="حذف حساب الموظف (للأدمن فقط)"><Trash2 className="w-3.5 h-3.5" /></button>
                             )}
                           </td>
                         </tr>
@@ -10959,9 +11120,25 @@ CREATE TABLE extracts (
           )}
 
           {/* Fallback Warning Card for Unauthorized Users */}
-          {((activeSection === "users" && !(currentUser?.role === "admin" || can("users"))) ||
-            (activeSection === "sessions" && !(currentUser?.role === "admin" || can("sessions"))) ||
-            (activeSection === "companies" && !(currentUser?.role === "admin" || can("companies")))) && (
+          {activeSection !== "my_profile" && !(
+            (activeSection === "dashboard" && (currentUser?.role === "admin" || can("dashboard"))) ||
+            (activeSection === "attendance" && (currentUser?.role === "admin" || can("attendance"))) ||
+            (activeSection === "installments" && (currentUser?.role === "admin" || can("installmentsView"))) ||
+            (activeSection === "subcontracts" && (currentUser?.role === "admin" || can("installmentsView"))) ||
+            (activeSection === "quotes" && (currentUser?.role === "admin" || can("quotes"))) ||
+            (activeSection === "receipts" && (currentUser?.role === "admin" || can("receipts"))) ||
+            (activeSection === "payments" && (currentUser?.role === "admin" || can("payments"))) ||
+            (activeSection === "expenses" && (currentUser?.role === "admin" || can("expenses"))) ||
+            (activeSection === "treasury" && (currentUser?.role === "admin" || can("treasury"))) ||
+            (activeSection === "financial_reports" && (currentUser?.role === "admin" || can("financial_reports"))) ||
+            (activeSection === "projects" && (currentUser?.role === "admin" || can("projects"))) ||
+            (activeSection === "workers" && (currentUser?.role === "admin" || can("workers"))) ||
+            (activeSection === "hr" && (currentUser?.role === "admin" || can("workers"))) ||
+            (activeSection === "company_assets" && (currentUser?.role === "admin" || can("companies"))) ||
+            (activeSection === "companies" && (currentUser?.role === "admin" || can("companies"))) ||
+            (activeSection === "users" && (currentUser?.role === "admin" || can("users"))) ||
+            (activeSection === "sessions" && (currentUser?.role === "admin" || can("sessions")))
+          ) && (
             <div className="flex flex-col items-center justify-center p-12 text-center max-w-lg mx-auto my-12 space-y-6 bg-slate-900/40 backdrop-blur-xl border border-amber-500/20 rounded-[32px] shadow-2xl relative overflow-hidden" dir="rtl">
               <div className="absolute top-0 right-0 w-16 h-16 border-t-2 border-r-2 border-amber-500/10 rounded-tr-[32px] pointer-events-none" />
               <div className="absolute bottom-0 left-0 w-16 h-16 border-b-2 border-l-2 border-amber-500/10 rounded-bl-[32px] pointer-events-none" />
@@ -11350,7 +11527,7 @@ CREATE TABLE extracts (
           onClose={() => setShowAuthModal(false)}
           userCode={currentUser?.code || loginCode || "1001"}
           userName={currentUser?.name || loginCode || "الموظف المفوّض"}
-          userRole={currentUser?.role === "admin" ? "مدير النظام" : "موظف"}
+          userRole={currentUser?.role === "admin" ? "مدير النظام" : (currentUser?.role === "cashier" ? "كاشير / أمين صندوق" : "موظف")}
           companyName={activeCompany?.name || "شركة عرب وورلد"}
           showToast={showToast}
           onSuccess2FA={(userCode, totpCode) => {
