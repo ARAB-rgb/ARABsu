@@ -1147,10 +1147,16 @@ export function deserializeQuoteNotes(notesStr: string | undefined, fallbackAmou
       const parsed = JSON.parse(text);
       if (parsed && typeof parsed === "object") {
         if (Array.isArray(parsed)) {
-          return { items: parsed, notes: "" };
+          return {
+            items: parsed.map((it: any) => ({ ...it, unit: it.unit || "وحدة قطوعة" })),
+            notes: ""
+          };
         }
         if (parsed.items && Array.isArray(parsed.items)) {
-          return { items: parsed.items, notes: parsed.notes || "" };
+          return {
+            items: parsed.items.map((it: any) => ({ ...it, unit: it.unit || "وحدة قطوعة" })),
+            notes: parsed.notes || ""
+          };
         }
       }
     }
@@ -1158,7 +1164,7 @@ export function deserializeQuoteNotes(notesStr: string | undefined, fallbackAmou
     // fallback on error
   }
   return {
-    items: [{ description: "بند توريد وتركيب مواد وأعمال عامة", quantity: 1, price: fallbackAmount || 0, total: fallbackAmount || 0 }],
+    items: [{ description: "بند توريد وتركيب مواد وأعمال عامة", unit: "وحدة قطوعة", quantity: 1, price: fallbackAmount || 0, total: fallbackAmount || 0 }],
     notes: notesStr || ""
   };
 }

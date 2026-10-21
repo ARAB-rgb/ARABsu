@@ -35,6 +35,20 @@ interface SaasLandingPortalProps {
     requested_company_record_no?: string;
     requested_company_tax_no?: string;
   }) => Promise<boolean>;
+  onRegisterUser?: (userData: {
+    name: string;
+    code: string;
+    password: string;
+    phone?: string;
+    email?: string;
+    role: "cashier" | "employee" | "supervisor" | "admin";
+    company_id?: string;
+    create_company?: boolean;
+    company_name?: string;
+    company_slug?: string;
+    company_manager?: string;
+    company_capital?: number;
+  }) => Promise<{ success: boolean; message?: string }>;
   onNavigateToSlug: (slug: string) => void;
   showToast: (message: string, type?: "success" | "error" | "info") => void;
 
@@ -59,6 +73,7 @@ export function SaasLandingPortal({
   companies,
   onRegisterCompany,
   onRegisterPendingUser,
+  onRegisterUser,
   onNavigateToSlug,
   showToast,
   loginCode,
@@ -78,6 +93,82 @@ export function SaasLandingPortal({
   const [showRegisterForm, setShowRegisterForm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // General Portal Auth Mode: "login" (تسجيل الدخول) vs "register" (إنشاء حساب جديد)
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+
+  // New User Registration Form States
+  const [regName, setRegName] = useState("");
+  const [regCode, setRegCode] = useState("");
+  const [regPass, setRegPass] = useState("");
+  const [regPassConfirm, setRegPassConfirm] = useState("");
+  const [regPhone, setRegPhone] = useState("");
+  const [regEmail, setRegEmail] = useState("");
+  const [regType, setRegType] = useState<"existing" | "new_company">("existing");
+  const [regRole, setRegRole] = useState<"cashier" | "employee" | "supervisor">("cashier");
+  const [regCompId, setRegCompId] = useState(companies[0]?.id || "arab_world");
+  const [regNewCompName, setRegNewCompName] = useState("");
+  const [regNewCompSlug, setRegNewCompSlug] = useState("");
+  const [regNewCompCapital, setRegNewCompCapital] = useState<number | "">("");
+  const [isRegisteringUser, setIsRegisteringUser] = useState(false);
+
+  const handleUserRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!regName.trim() || !regCode.trim() || !regPass.trim()) {
+      showToast("يرجى إدخال الاسم، اسم المستخدم، وكلمة المرور!", "error");
+      return;
+    }
+    if (regPass !== regPassConfirm) {
+      showToast("كلمة المرور وتأكيدها غير متطابقتين!", "error");
+      return;
+    }
+    if (regPass.length < 4) {
+      showToast("كلمة المرور يجب أن تتكون من 4 خانات على الأقل!", "error");
+      return;
+    }
+    if (regType === "new_company") {
+      if (!regNewCompName.trim() || !regNewCompSlug.trim()) {
+        showToast("يرجى إدخال اسم الشركة ورابطها المخصص للإنشاء!", "error");
+        return;
+      }
+    }
+
+    setIsRegisteringUser(true);
+    try {
+      if (onRegisterUser) {
+        const res = await onRegisterUser({
+          name: regName.trim(),
+          code: regCode.trim(),
+          password: regPass.trim(),
+          phone: regPhone.trim(),
+          email: regEmail.trim(),
+          role: regType === "new_company" ? "admin" : regRole,
+          company_id: regType === "existing" ? regCompId : undefined,
+          create_company: regType === "new_company",
+          company_name: regType === "new_company" ? regNewCompName.trim() : undefined,
+          company_slug: regType === "new_company" ? regNewCompSlug.trim() : undefined,
+          company_manager: regType === "new_company" ? regName.trim() : undefined,
+          company_capital: regType === "new_company" ? Number(regNewCompCapital || 0) : undefined,
+        });
+
+        if (res.success) {
+          setRegName("");
+          setRegCode("");
+          setRegPass("");
+          setRegPassConfirm("");
+          setRegPhone("");
+          setRegEmail("");
+          setRegNewCompName("");
+          setRegNewCompSlug("");
+          setRegNewCompCapital("");
+        }
+      } else {
+        showToast("خدمة التسجيل المباشر غير مهيأة حالياً", "error");
+      }
+    } finally {
+      setIsRegisteringUser(false);
+    }
+  };
+
   // Google Flow Tab Mode: "new_reg" | "link"
   const [googleTab, setGoogleTab] = useState<"new_reg" | "link">("new_reg");
 
@@ -85,6 +176,7 @@ export function SaasLandingPortal({
   const [gRegName, setGRegName] = useState("");
   const [gRegPhone, setGRegPhone] = useState("");
   const [gReqMode, setGReqMode] = useState<"new_company" | "existing">("new_company");
+  const [gReqRole, setGReqRole] = useState<"admin" | "cashier" | "employee">("cashier");
   const [gSelectedCompId, setGSelectedCompId] = useState(companies[0]?.id || "arab_world");
   const [gReqCompName, setGReqCompName] = useState("");
   const [gReqCompSlug, setGReqCompSlug] = useState("");
@@ -126,6 +218,7 @@ export function SaasLandingPortal({
         email: googleUser.email,
         google_id: googleUser.uid,
         phone: gRegPhone.trim(),
+        role: gReqMode === "new_company" ? "admin" : gReqRole,
         company_id: gReqMode === "existing" ? gSelectedCompId : undefined,
         requested_company_name: gReqMode === "new_company" ? gReqCompName.trim() : undefined,
         requested_company_slug: gReqMode === "new_company" ? gReqCompSlug.trim() : undefined,
@@ -427,19 +520,37 @@ export function SaasLandingPortal({
                         </div>
                       </div>
                     ) : (
-                      <div className="space-y-1 mt-2">
-                        <label className="text-[10px] font-bold text-slate-300">اختر الشركة المراد الانضمام لها</label>
-                        <select
-                          value={gSelectedCompId}
-                          onChange={(e) => setGSelectedCompId(e.target.value)}
-                          className="w-full h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-amber-400 focus:outline-none cursor-pointer text-slate-950 bg-white"
-                        >
-                          {companies.map((c) => (
-                            <option key={c.id} value={c.id} className="text-slate-950">
-                              🏢 {c.name} ({c.slug})
-                            </option>
-                          ))}
-                        </select>
+                      <div className="space-y-3 mt-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-300">اختر الشركة المراد الانضمام لها</label>
+                          <select
+                            value={gSelectedCompId}
+                            onChange={(e) => setGSelectedCompId(e.target.value)}
+                            className="w-full h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-amber-400 focus:outline-none cursor-pointer text-slate-950 bg-white"
+                          >
+                            {companies.map((c) => (
+                              <option key={c.id} value={c.id} className="text-slate-950">
+                                🏢 {c.name} ({c.slug})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-300">الدور والمسؤولية المطلوبة في المنشأة</label>
+                          <select
+                            value={gReqRole}
+                            onChange={(e: any) => setGReqRole(e.target.value)}
+                            className="w-full h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-amber-300 focus:outline-none cursor-pointer text-slate-950 bg-white"
+                          >
+                            <option value="cashier" className="text-slate-950">💰 كاشير / أمين صندوق (تحصيل وخزينة كاملة)</option>
+                            <option value="employee" className="text-slate-950">👨‍💼 موظف فرع محدود (حضور وبصمة)</option>
+                            <option value="admin" className="text-slate-950">👑 مدير فرع / مسؤول</option>
+                          </select>
+                          <p className="text-[9px] text-amber-400 font-medium leading-relaxed">
+                            💡 يتم تفعيل الصلاحيات بعد اعتماد الإدارة مع عزل وحماية بيانات الشركات الأخرى تلقائياً.
+                          </p>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -550,123 +661,416 @@ export function SaasLandingPortal({
             </>
           ) : (
             <>
-              <div className="text-center mb-6">
-                <h3 className="text-sm font-black text-white flex items-center justify-center gap-1.5">
-                  <Lock className="w-4 h-4 text-amber-500" />
-                  <span>تسجيل الدخول الآمن</span>
-                </h3>
-                <p className="text-[10px] text-slate-400 mt-1">أدخل معرّفات الدخول للمنشأة والمسؤول لمتابعة العمل</p>
+              {/* Tab Switcher: Login vs Register */}
+              <div className="flex rounded-2xl bg-slate-950/90 p-1 border border-slate-800/80 mb-5 shadow-inner">
+                <button
+                  type="button"
+                  onClick={() => setAuthMode("login")}
+                  className={`flex-1 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    authMode === "login"
+                      ? "bg-gradient-to-l from-amber-500 to-yellow-500 text-slate-950 shadow-md font-sans"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>تسجيل الدخول</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode("register")}
+                  className={`flex-1 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    authMode === "register"
+                      ? "bg-gradient-to-l from-amber-500 to-yellow-500 text-slate-950 shadow-md font-sans"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>إنشاء حساب جديد</span>
+                </button>
               </div>
 
-              <form onSubmit={handleLogin} className="space-y-5">
-                {/* 1. Username Field */}
-                <div className="space-y-1.5">
-                  <div className="flex justify-between items-center px-1">
-                    <label className="text-[10px] font-black text-slate-300">اسم المستخدم</label>
-                    <span className="text-[9px] text-slate-500 font-mono">USERNAME</span>
+              {authMode === "login" ? (
+                <>
+                  <div className="text-center mb-5">
+                    <h3 className="text-sm font-black text-white flex items-center justify-center gap-1.5">
+                      <Lock className="w-4 h-4 text-amber-500" />
+                      <span>تسجيل الدخول الآمن</span>
+                    </h3>
+                    <p className="text-[10px] text-slate-400 mt-1">أدخل معرّفات الدخول للمنشأة والمسؤول لمتابعة العمل</p>
                   </div>
-                  <div className="relative h-11">
-                    <User className="absolute right-4 top-3.5 w-4 h-4 text-amber-500/70" />
-                    <input
-                      required
-                      type="text"
-                      placeholder="أدخل اسم المستخدم..."
-                      value={loginCode}
-                      onChange={(e) => setLoginCode(e.target.value)}
-                      className="w-full h-full pl-4 pr-11 py-2.5 bg-slate-950/80 border border-slate-800 rounded-2xl text-xs font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 transition-all text-right"
-                    />
-                  </div>
-                </div>
 
-                {/* 2. Password Field */}
-                <div className="space-y-1.5">
-                  <div className="flex justify-between items-center px-1">
-                    <label className="text-[10px] font-black text-slate-300">كلمة السر</label>
-                    <span className="text-[9px] text-slate-500 font-mono">PASSWORD</span>
-                  </div>
-                  <div className="relative h-11">
-                    <Key className="absolute right-4 top-3.5 w-4 h-4 text-amber-500/70" />
-                    <input
-                      required
-                      type="password"
-                      placeholder="أدخل كلمة السر..."
-                      value={loginPass}
-                      onChange={(e) => setLoginPass(e.target.value)}
-                      className="w-full h-full pl-4 pr-11 py-2.5 bg-slate-950/80 border border-slate-800 rounded-2xl text-xs font-mono font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 transition-all text-left"
-                      dir="ltr"
-                    />
-                  </div>
-                </div>
-
-                {/* Submit Button */}
-                <button
-                  disabled={isLoading}
-                  type="submit"
-                  className="w-full h-12 bg-gradient-to-l from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-2xl text-xs transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/10 cursor-pointer disabled:opacity-50"
-                >
-                  {isLoading ? (
-                    <>
-                      <span className="w-4 h-4 rounded-full border-2 border-slate-950 border-t-transparent animate-spin"></span>
-                      <span>جاري التحقق والولوج للشركة...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>⚙️ دخول لوحة التحكم</span>
-                      <ArrowRight className="w-4 h-4 text-slate-950" />
-                    </>
-                  )}
-                </button>
-
-                {/* Google Sign-In Trigger button */}
-                {handleGoogleSignIn && (
-                  <>
-                    <div className="relative flex py-2 items-center">
-                      <div className="flex-grow border-t border-slate-800/80"></div>
-                      <span className="flex-shrink mx-3 text-[9px] text-slate-500 font-bold">أو الدخول السريع عبر</span>
-                      <div className="flex-grow border-t border-slate-800/80"></div>
+                  <form onSubmit={handleLogin} className="space-y-4">
+                    {/* 1. Username Field */}
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[10px] font-black text-slate-300">اسم المستخدم</label>
+                        <span className="text-[9px] text-slate-500 font-mono">USERNAME</span>
+                      </div>
+                      <div className="relative h-11">
+                        <User className="absolute right-4 top-3.5 w-4 h-4 text-amber-500/70" />
+                        <input
+                          required
+                          type="text"
+                          placeholder="أدخل اسم المستخدم..."
+                          value={loginCode}
+                          onChange={(e) => setLoginCode(e.target.value)}
+                          className="w-full h-full pl-4 pr-11 py-2.5 bg-slate-950/80 border border-slate-800 rounded-2xl text-xs font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 transition-all text-right"
+                        />
+                      </div>
                     </div>
 
+                    {/* 2. Password Field */}
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[10px] font-black text-slate-300">كلمة السر</label>
+                        <span className="text-[9px] text-slate-500 font-mono">PASSWORD</span>
+                      </div>
+                      <div className="relative h-11">
+                        <Key className="absolute right-4 top-3.5 w-4 h-4 text-amber-500/70" />
+                        <input
+                          required
+                          type="password"
+                          placeholder="أدخل كلمة السر..."
+                          value={loginPass}
+                          onChange={(e) => setLoginPass(e.target.value)}
+                          className="w-full h-full pl-4 pr-11 py-2.5 bg-slate-950/80 border border-slate-800 rounded-2xl text-xs font-mono font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 transition-all text-left"
+                          dir="ltr"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Quick Presets: Cashier and Admin */}
+                    <div className="grid grid-cols-2 gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLoginCode("cashier");
+                          setLoginPass("123456");
+                          showToast("💰 تم إدخال بيانات الكاشير (cashier / 123456) - اضغط دخول لوحة التحكم", "info");
+                        }}
+                        className="h-10 px-2 bg-gradient-to-r from-amber-500/15 to-yellow-500/10 hover:from-amber-500/25 hover:to-yellow-500/20 border border-amber-500/35 text-amber-300 font-black rounded-xl text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                        title="تسجيل دخول كاشير مصرح بكامل صلاحيات الصندوق والتحصيل"
+                      >
+                        <span>💰</span>
+                        <span>دخول كاشير الصندوق</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLoginCode("1007363904");
+                          setLoginPass("139213");
+                          showToast("👑 تم إدخال بيانات المدير العام (1007363904) - اضغط دخول", "info");
+                        }}
+                        className="h-10 px-2 bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white font-bold rounded-xl text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                        title="دخول سريع للمدير العام"
+                      >
+                        <span>👑</span>
+                        <span>دخول المدير العام</span>
+                      </button>
+                    </div>
+
+                    {/* Submit Button */}
+                    <button
+                      disabled={isLoading}
+                      type="submit"
+                      className="w-full h-12 bg-gradient-to-l from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-2xl text-xs transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/10 cursor-pointer disabled:opacity-50"
+                    >
+                      {isLoading ? (
+                        <>
+                          <span className="w-4 h-4 rounded-full border-2 border-slate-950 border-t-transparent animate-spin"></span>
+                          <span>جاري التحقق والولوج للشركة...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>⚙️ دخول لوحة التحكم</span>
+                          <ArrowRight className="w-4 h-4 text-slate-950" />
+                        </>
+                      )}
+                    </button>
+
+                    {/* Google Sign-In Trigger button */}
+                    {handleGoogleSignIn && (
+                      <>
+                        <div className="relative flex py-1.5 items-center">
+                          <div className="flex-grow border-t border-slate-800/80"></div>
+                          <span className="flex-shrink mx-3 text-[9px] text-slate-500 font-bold">أو الدخول السريع عبر</span>
+                          <div className="flex-grow border-t border-slate-800/80"></div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleGoogleSignIn}
+                          disabled={isLoading}
+                          className="w-full h-11 bg-slate-950 hover:bg-slate-900 border border-slate-800 hover:border-amber-500/30 text-white font-bold rounded-2xl text-xs transition-all flex items-center justify-center gap-2.5 shadow-md cursor-pointer disabled:opacity-50"
+                        >
+                          <svg className="w-4 h-4 text-white" viewBox="0 0 24 24">
+                            <path
+                              fill="currentColor"
+                              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                            />
+                            <path
+                              fill="currentColor"
+                              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                            />
+                            <path
+                              fill="currentColor"
+                              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                            />
+                            <path
+                              fill="currentColor"
+                              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                            />
+                          </svg>
+                          <span>الدخول السريع بواسطة Google</span>
+                        </button>
+                      </>
+                    )}
+
+                    {/* Authenticator QR Code / 2FA Barcode Button */}
+                    <div className="pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setShowAuthModal(true)}
+                        className="w-full h-11 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 font-black rounded-2xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                      >
+                        <span className="text-sm">📱</span>
+                        <span>رمز المصادقة والباركود (Authenticator 2FA)</span>
+                      </button>
+                    </div>
+
+                    <div className="text-center pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setAuthMode("register")}
+                        className="text-[11px] text-amber-400 hover:text-amber-300 font-bold hover:underline cursor-pointer"
+                      >
+                        ليس لديك حساب بعد؟ اضغط هنا لإنشاء حساب جديد مجاناً 🚀
+                      </button>
+                    </div>
+                  </form>
+                </>
+              ) : (
+                /* Registration Form for New Users */
+                <form onSubmit={handleUserRegisterSubmit} className="space-y-4 text-right" dir="rtl">
+                  <div className="text-center mb-3">
+                    <h3 className="text-sm font-black text-white flex items-center justify-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-amber-500" />
+                      <span>إنشاء حساب مستخدم جديد</span>
+                    </h3>
+                    <p className="text-[10px] text-slate-400 mt-1">انضم ككاشير أو موظف لمنشأة قائمة أو أسس شركتك الخاصة فوراً</p>
+                  </div>
+
+                  {/* 1. Account Scope Selection */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-amber-400 block">نوع الحساب والهدف</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRegType("existing")}
+                        className={`p-2.5 rounded-xl border text-right text-[10px] font-bold transition-all cursor-pointer ${
+                          regType === "existing"
+                            ? "bg-amber-500/15 border-amber-500/40 text-amber-300 shadow-sm"
+                            : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-300"
+                        }`}
+                      >
+                        🤝 انضمام لمنشأة قائمة
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRegType("new_company")}
+                        className={`p-2.5 rounded-xl border text-right text-[10px] font-bold transition-all cursor-pointer ${
+                          regType === "new_company"
+                            ? "bg-amber-500/15 border-amber-500/40 text-amber-300 shadow-sm"
+                            : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-300"
+                        }`}
+                      >
+                        🏢 تأسيس شركة جديدة
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 2. Personal & Login Details */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-300">الاسم الكامل <span className="text-rose-500">*</span></label>
+                      <input
+                        required
+                        type="text"
+                        placeholder="الاسم الكامل"
+                        value={regName}
+                        onChange={(e) => setRegName(e.target.value)}
+                        className="w-full h-10 px-3 bg-slate-950/80 border border-slate-800 rounded-xl text-xs font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-300">رقم الجوال <span className="text-rose-500">*</span></label>
+                      <input
+                        required
+                        type="text"
+                        placeholder="05xxxxxxxx"
+                        value={regPhone}
+                        onChange={(e) => setRegPhone(e.target.value)}
+                        className="w-full h-10 px-3 bg-slate-950/80 border border-slate-800 rounded-xl text-xs font-mono font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 text-left"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-300">اسم المستخدم (كود الدخول) <span className="text-rose-500">*</span></label>
+                      <input
+                        required
+                        type="text"
+                        placeholder="user101"
+                        value={regCode}
+                        onChange={(e) => setRegCode(e.target.value)}
+                        className="w-full h-10 px-3 bg-slate-950/80 border border-slate-800 rounded-xl text-xs font-bold text-amber-300 placeholder-slate-600 focus:outline-none focus:border-amber-500 text-left font-mono"
+                        dir="ltr"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-300">البريد الإلكتروني (اختياري)</label>
+                      <input
+                        type="email"
+                        placeholder="user@example.com"
+                        value={regEmail}
+                        onChange={(e) => setRegEmail(e.target.value)}
+                        className="w-full h-10 px-3 bg-slate-950/80 border border-slate-800 rounded-xl text-xs font-mono text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 text-left"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-300">كلمة المرور <span className="text-rose-500">*</span></label>
+                      <input
+                        required
+                        type="password"
+                        placeholder="••••••••"
+                        value={regPass}
+                        onChange={(e) => setRegPass(e.target.value)}
+                        className="w-full h-10 px-3 bg-slate-950/80 border border-slate-800 rounded-xl text-xs font-mono font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 text-left"
+                        dir="ltr"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-300">تأكيد كلمة المرور <span className="text-rose-500">*</span></label>
+                      <input
+                        required
+                        type="password"
+                        placeholder="••••••••"
+                        value={regPassConfirm}
+                        onChange={(e) => setRegPassConfirm(e.target.value)}
+                        className="w-full h-10 px-3 bg-slate-950/80 border border-slate-800 rounded-xl text-xs font-mono font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 text-left"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+
+                  {/* 3. Conditional Fields Based on Registration Type */}
+                  {regType === "existing" ? (
+                    <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-300">اختر المنشأة المراد الانضمام لها <span className="text-rose-500">*</span></label>
+                        <select
+                          value={regCompId}
+                          onChange={(e) => setRegCompId(e.target.value)}
+                          className="w-full h-10 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-amber-400 focus:outline-none cursor-pointer text-slate-950 bg-white"
+                        >
+                          {companies.map((c) => (
+                            <option key={c.id} value={c.id} className="text-slate-950">
+                              🏢 {c.name} ({c.slug})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-300">الدور والمسؤولية المطلوبة</label>
+                        <select
+                          value={regRole}
+                          onChange={(e: any) => setRegRole(e.target.value)}
+                          className="w-full h-10 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none cursor-pointer text-slate-950 bg-white"
+                        >
+                          <option value="cashier" className="text-slate-950">💰 كاشير / أمين صندوق (تحصيل وخزينة كاملة)</option>
+                          <option value="employee" className="text-slate-950">👨‍💼 موظف فرع محدود (حضور وبصمة)</option>
+                          <option value="supervisor" className="text-slate-950">🕵️‍♂️ مشرف مكتب عام</option>
+                        </select>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-950/80 border border-amber-500/20 rounded-2xl space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-300">اسم الشركة الجديد المطلوب تأسيسها <span className="text-rose-500">*</span></label>
+                        <input
+                          required
+                          type="text"
+                          placeholder="مثال: شركة الرؤية للتجارة"
+                          value={regNewCompName}
+                          onChange={(e) => setRegNewCompName(e.target.value)}
+                          className="w-full h-10 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-300">الرابط المخصص (Slug) <span className="text-rose-500">*</span></label>
+                          <input
+                            required
+                            type="text"
+                            placeholder="al-ruya"
+                            value={regNewCompSlug}
+                            onChange={(e) => setRegNewCompSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                            className="w-full h-10 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 focus:outline-none text-left"
+                            dir="ltr"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-300">رأس المال بالعقود (ريال)</label>
+                          <input
+                            type="number"
+                            placeholder="100000"
+                            value={regNewCompCapital}
+                            onChange={(e) => setRegNewCompCapital(e.target.value === "" ? "" : Number(e.target.value))}
+                            className="w-full h-10 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Submit Button */}
+                  <button
+                    disabled={isRegisteringUser}
+                    type="submit"
+                    className="w-full h-12 bg-gradient-to-l from-amber-500 via-amber-600 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black rounded-2xl text-xs transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 cursor-pointer disabled:opacity-50 mt-2"
+                  >
+                    {isRegisteringUser ? (
+                      <>
+                        <span className="w-4 h-4 rounded-full border-2 border-slate-950 border-t-transparent animate-spin"></span>
+                        <span>جاري بناء الحساب وتأمين الجلسة...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>✨ إنشاء الحساب وبدء الاستخدام الآن</span>
+                        <ArrowRight className="w-4 h-4 text-slate-950" />
+                      </>
+                    )}
+                  </button>
+
+                  <div className="text-center pt-1">
                     <button
                       type="button"
-                      onClick={handleGoogleSignIn}
-                      disabled={isLoading}
-                      className="w-full h-11 bg-slate-950 hover:bg-slate-900 border border-slate-800 hover:border-amber-500/30 text-white font-bold rounded-2xl text-xs transition-all flex items-center justify-center gap-2.5 shadow-md cursor-pointer disabled:opacity-50"
+                      onClick={() => setAuthMode("login")}
+                      className="text-[11px] text-slate-400 hover:text-white font-bold transition-all cursor-pointer"
                     >
-                      <svg className="w-4 h-4 text-white" viewBox="0 0 24 24">
-                        <path
-                          fill="currentColor"
-                          d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                        />
-                        <path
-                          fill="currentColor"
-                          d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                        />
-                        <path
-                          fill="currentColor"
-                          d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                        />
-                        <path
-                          fill="currentColor"
-                          d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                        />
-                      </svg>
-                      <span>الدخول السريع بواسطة Google</span>
+                      لديك حساب بالفعل؟ <span className="text-amber-400 underline">تسجيل الدخول الآن 🔑</span>
                     </button>
-                  </>
-                )}
-
-                {/* Authenticator QR Code / 2FA Barcode Button */}
-                <div className="pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setShowAuthModal(true)}
-                    className="w-full h-11 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 font-black rounded-2xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md"
-                  >
-                    <span className="text-sm">📱</span>
-                    <span>رمز المصادقة والباركود (Authenticator 2FA)</span>
-                  </button>
-                </div>
-              </form>
+                  </div>
+                </form>
+              )}
             </>
           )}
         </motion.div>

@@ -147,7 +147,7 @@ export interface Quote {
   date: string;
   status: "جديد" | "مرسل" | "مقبول" | "مرفوض";
   notes?: string;
-  items?: { description: string; quantity: number; price: number; total: number; }[];
+  items?: { description: string; unit?: string; quantity: number; price: number; total: number; }[];
   created_at?: string;
 }
 

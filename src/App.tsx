@@ -429,6 +429,12 @@ function PendingUserApprovalCard({
               <span className="text-xs font-bold text-indigo-300">
                 🏢 طلب انضمام لشركة قائمة: <span className="text-white font-black">{companies.find(c => c.id === pendingUser.company_id)?.name || "شركة عرب وورلد"}</span>
               </span>
+              {pendingUser.role === "cashier" && (
+                <div className="text-[10px] text-amber-300 font-bold flex items-center gap-1 mt-1 bg-amber-500/10 border border-amber-500/25 px-2 py-0.5 rounded-lg w-fit">
+                  <span>💰</span>
+                  <span>المسمى المطلوب: كاشير / أمين صندوق (تحصيل وخزينة كاملة)</span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -635,6 +641,225 @@ export default function App() {
     }
   };
 
+  // Dedicated New User Registration Handler
+  const handleRegisterUser = async (userData: {
+    name: string;
+    code: string;
+    password: string;
+    phone?: string;
+    email?: string;
+    role: "cashier" | "employee" | "supervisor" | "admin";
+    company_id?: string;
+    create_company?: boolean;
+    company_name?: string;
+    company_slug?: string;
+    company_manager?: string;
+    company_capital?: number;
+  }): Promise<{ success: boolean; message?: string }> => {
+    setIsLoading(true);
+    try {
+      const cleanCode = userData.code.trim().toLowerCase();
+
+      // 1. Check if user code or phone already exists
+      const { data: allUsers } = await sb.from("users").select("id, code, phone");
+      const codeExists = (allUsers || []).some(
+        (u: any) =>
+          (u.code || "").trim().toLowerCase() === cleanCode ||
+          (userData.phone && userData.phone.trim() && (u.phone || "").trim() === userData.phone.trim())
+      );
+      if (codeExists) {
+        showToast("⚠️ اسم المستخدم أو كود الدخول مسجل مسبقاً! يرجى اختيار اسم مستخدم آخر.", "error");
+        return { success: false, message: "اسم المستخدم مسجل مسبقاً." };
+      }
+
+      let finalCompId: string | null = userData.company_id || null;
+      let finalRole: "admin" | "cashier" | "employee" | "supervisor" = userData.role;
+
+      // 2. Handle new company creation if requested
+      if (userData.create_company) {
+        const cleanSlug = (userData.company_slug || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+        if (!cleanSlug || cleanSlug.length < 2) {
+          showToast("يرجى إدخال رابط مخصص صالح للشركة!", "error");
+          return { success: false, message: "رابط مخصص غير صالح." };
+        }
+
+        const slugExists = companies.some(
+          (c) => (c.slug || "").toLowerCase() === cleanSlug || c.id.toLowerCase() === cleanSlug
+        );
+        if (slugExists) {
+          showToast("رابط الشركة المخصص مستخدم مسبقاً! اختر اسماً آخر.", "error");
+          return { success: false, message: "رابط الشركة مستخدم مسبقاً." };
+        }
+
+        finalCompId = `company_${cleanSlug}`;
+        const newCompanyPayload: Company = {
+          id: finalCompId,
+          slug: cleanSlug,
+          name: userData.company_name?.trim() || `شركة ${userData.name.trim()}`,
+          manager: userData.company_manager?.trim() || userData.name.trim(),
+          phone: userData.phone?.trim() || "",
+          notes: `تأسيس حساب جديد | رأس المال: ${userData.company_capital || 0} ر.س`,
+          created_at: new Date().toISOString(),
+        };
+
+        const { error: compErr } = await sb.from("companies").insert(newCompanyPayload);
+        if (compErr) {
+          console.error("Comp error:", compErr);
+          showToast("حدث خطأ أثناء تأسيس سجل الشركة!", "error");
+          return { success: false, message: compErr.message };
+        }
+
+        setCompanies((prev) => [newCompanyPayload, ...prev]);
+        finalRole = "admin";
+      }
+
+      // 3. Define appropriate permissions based on role
+      let userPerms: UserPerms;
+      if (finalRole === "admin") {
+        userPerms = {
+          installmentsView: true,
+          installmentsAdd: true,
+          installmentsEdit: true,
+          installmentsDelete: true,
+          quotes: true,
+          receipts: true,
+          payments: true,
+          expenses: true,
+          treasury: true,
+          financial_reports: true,
+          projects: true,
+          workers: true,
+          companies: true,
+          users: true,
+          sessions: true,
+          print: true,
+          dashTopCards: true,
+          dashCollection: true,
+          dashPulse: true,
+          dashLateClients: true,
+          dashLastReceipts: true,
+          dashUpcomingPaid: true,
+          region: "",
+          worker_id: null,
+        };
+      } else if (finalRole === "cashier") {
+        userPerms = {
+          ...CASHIER_DEFAULT_PERMS,
+          region: "",
+          worker_id: null,
+        };
+      } else if (finalRole === "supervisor") {
+        userPerms = {
+          attendance: true,
+          dashboard: true,
+          installmentsView: true,
+          installmentsAdd: true,
+          installmentsEdit: true,
+          installmentsDelete: false,
+          quotes: true,
+          receipts: true,
+          payments: true,
+          expenses: true,
+          treasury: false,
+          financial_reports: false,
+          projects: true,
+          workers: true,
+          companies: false,
+          users: false,
+          sessions: false,
+          print: true,
+          dashTopCards: true,
+          dashCollection: true,
+          dashPulse: false,
+          dashLateClients: true,
+          dashLastReceipts: true,
+          dashUpcomingPaid: true,
+          region: "",
+          worker_id: null,
+        };
+      } else {
+        // employee
+        userPerms = {
+          attendance: true,
+          dashboard: false,
+          installmentsView: true,
+          installmentsAdd: false,
+          installmentsEdit: false,
+          installmentsDelete: false,
+          quotes: false,
+          receipts: false,
+          payments: false,
+          expenses: false,
+          treasury: false,
+          financial_reports: false,
+          projects: false,
+          workers: false,
+          companies: false,
+          users: false,
+          sessions: false,
+          print: true,
+          dashTopCards: false,
+          dashCollection: false,
+          dashPulse: false,
+          dashLateClients: false,
+          dashLastReceipts: false,
+          dashUpcomingPaid: false,
+          region: "",
+          worker_id: null,
+        };
+      }
+
+      // 4. Construct user payload
+      const newUserId = `usr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const newUserPayload: AuthUser = {
+        id: newUserId,
+        name: userData.name.trim(),
+        code: userData.code.trim(),
+        password: userData.password.trim(),
+        phone: userData.phone?.trim() || "",
+        email: userData.email?.trim() || "",
+        role: finalRole,
+        company_id: finalCompId || (companies[0]?.id || "arab_world"),
+        status: "نشط",
+        perms: userPerms,
+        company_perms: {},
+        created_at: new Date().toISOString(),
+      };
+
+      const { error: userErr } = await sb.from("users").insert(newUserPayload);
+      if (userErr) {
+        showToast("فشل في حفظ بيانات المستخدم: " + userErr.message, "error");
+        return { success: false, message: userErr.message };
+      }
+
+      setUsers((prev) => [newUserPayload, ...prev]);
+
+      // 5. Auto-login the new user immediately
+      setCurrentUser(newUserPayload);
+      localStorage.setItem("aw_current_user", JSON.stringify(newUserPayload));
+
+      const matchedComp = companies.find(
+        (c) => c.id === newUserPayload.company_id || c.slug === newUserPayload.company_id
+      );
+      if (matchedComp) {
+        navigateToSlug(matchedComp.slug || matchedComp.id);
+      } else if (userData.create_company && userData.company_slug) {
+        navigateToSlug(userData.company_slug);
+      }
+
+      showToast(`🎉 أهلاً بك يا ${newUserPayload.name}! تم إنشاء حسابك بنجاح وبدء الجلسة.`, "success");
+      await logSession(newUserPayload, "إنشاء حساب جديد وتسجيل دخول فوري");
+      await loadEverything();
+      return { success: true };
+    } catch (err: any) {
+      console.error("Register user error:", err);
+      showToast("حدث خطأ أثناء إنشاء الحساب: " + (err?.message || err), "error");
+      return { success: false, message: err?.message || err };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Auth State
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
     const saved = localStorage.getItem("aw_current_user");
@@ -784,8 +1009,8 @@ export default function App() {
   const [qVat, setQVat] = useState<number | "">(15);
   const [qStatus, setQStatus] = useState<"جديد" | "مرسل" | "مقبول" | "مرفوض">("جديد");
   const [qNotes, setQNotes] = useState("");
-  const [qItems, setQItems] = useState<{ description: string; quantity: number; price: number; total: number; }[]>([
-    { description: "توريد وتركيب مواد وأعمال عامة", quantity: 1, price: 0, total: 0 }
+  const [qItems, setQItems] = useState<{ description: string; unit?: string; quantity: number; price: number; total: number; }[]>([
+    { description: "توريد وتركيب مواد وأعمال عامة", unit: "وحدة قطوعة", quantity: 1, price: 0, total: 0 }
   ]);
 
   // 2. Receipts Forms
@@ -1042,9 +1267,12 @@ export default function App() {
           console.warn("Background admin DB sync skipped/failed:", dbErr);
         }
 
-        if (targetCompId) {
-          const matchedC = companies.find((c) => c.id === targetCompId || c.slug === targetCompId);
-          if (matchedC) navigateToSlug(matchedC.slug || matchedC.id);
+        const matchedC = targetCompId
+          ? companies.find((c) => c.id === targetCompId || c.slug === targetCompId)
+          : (companies[0] || undefined);
+        if (matchedC) {
+          defaultAdmin.company_id = matchedC.id;
+          navigateToSlug(matchedC.slug || matchedC.id);
         }
 
         setCurrentUser(defaultAdmin);
@@ -1107,9 +1335,12 @@ export default function App() {
             console.warn("Background cashier DB sync skipped:", dbErr);
           }
 
-          if (targetCompId) {
-            const matchedC = companies.find((c) => c.id === targetCompId || c.slug === targetCompId);
-            if (matchedC) navigateToSlug(matchedC.slug || matchedC.id);
+          const matchedCashierComp = targetCompId
+            ? companies.find((c) => c.id === targetCompId || c.slug === targetCompId)
+            : (companies[0] || undefined);
+          if (matchedCashierComp) {
+            defaultCashier.company_id = matchedCashierComp.id;
+            navigateToSlug(matchedCashierComp.slug || matchedCashierComp.id);
           }
 
           setCurrentUser(defaultCashier);
@@ -1301,10 +1532,12 @@ export default function App() {
         return;
       }
 
-      if (targetCompId) {
-        matchedUser.company_id = targetCompId;
-        const matchedC = companies.find((c) => c.id === targetCompId || c.slug === targetCompId);
-        if (matchedC) navigateToSlug(matchedC.slug || matchedC.id);
+      const targetC = targetCompId
+        ? companies.find((c) => c.id === targetCompId || c.slug === targetCompId)
+        : (companies.find((c) => c.id === matchedUser.company_id || c.slug === matchedUser.company_id) || companies[0] || undefined);
+      if (targetC) {
+        matchedUser.company_id = targetC.id;
+        navigateToSlug(targetC.slug || targetC.id);
       }
 
       setCurrentUser(matchedUser as AuthUser);
@@ -1364,6 +1597,25 @@ export default function App() {
           showToast("⚠️ عذراً، هذا الحساب موقوف أو معطل حالياً من قبل الإدارة!", "error");
           setIsLoading(false);
           return;
+        }
+
+        // Ensure we have loaded companies
+        let currentCompanies = companies;
+        if (currentCompanies.length === 0) {
+          try {
+            const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
+            currentCompanies = comp.data || [];
+            setCompanies(currentCompanies);
+          } catch (compErr) {
+            console.warn("Could not load companies during Google login:", compErr);
+          }
+        }
+
+        const targetC = user.company_id && user.company_id !== "all"
+          ? (currentCompanies.find((c) => c.id === user.company_id || c.slug === user.company_id) || currentCompanies[0] || undefined)
+          : (currentCompanies[0] || undefined);
+        if (targetC) {
+          navigateToSlug(targetC.slug || targetC.id);
         }
 
         // Successfully logged in directly because they are active & linked!
@@ -1505,6 +1757,7 @@ export default function App() {
     email: string;
     google_id?: string;
     phone: string;
+    role?: "admin" | "cashier" | "employee" | "supervisor";
     company_id?: string;
     requested_company_name?: string;
     requested_company_slug?: string;
@@ -1521,6 +1774,44 @@ export default function App() {
       const generatedPass = Math.floor(100000 + Math.random() * 900000).toString();
       const newUserId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
+      const assignedRole: "admin" | "cashier" | "employee" | "supervisor" =
+        data.role || (data.requested_company_name ? "admin" : "employee");
+
+      const assignedPerms = assignedRole === "cashier"
+        ? {
+            ...CASHIER_DEFAULT_PERMS,
+            region: "",
+            worker_id: null
+          }
+        : {
+            attendance: true,
+            dashboard: true,
+            installmentsView: true,
+            installmentsAdd: true,
+            installmentsEdit: false,
+            installmentsDelete: false,
+            quotes: true,
+            receipts: true,
+            payments: true,
+            expenses: true,
+            treasury: false,
+            financial_reports: true,
+            projects: true,
+            workers: true,
+            companies: false,
+            users: false,
+            sessions: false,
+            print: true,
+            dashTopCards: true,
+            dashCollection: true,
+            dashPulse: true,
+            dashLateClients: true,
+            dashLastReceipts: true,
+            dashUpcomingPaid: true,
+            region: "",
+            worker_id: null
+          };
+
       const newUserPayload: AuthUser = {
         id: newUserId,
         name: data.name,
@@ -1529,7 +1820,7 @@ export default function App() {
         email: data.email,
         google_id: data.google_id || "",
         phone: data.phone,
-        role: data.requested_company_name ? "admin" : "employee",
+        role: assignedRole,
         status: "بانتظار الاعتماد",
         company_id: data.company_id || null,
         requested_company_name: data.requested_company_name,
@@ -1540,34 +1831,7 @@ export default function App() {
         requested_company_address: data.requested_company_address,
         requested_company_record_no: data.requested_company_record_no,
         requested_company_tax_no: data.requested_company_tax_no,
-        perms: {
-          attendance: true,
-          dashboard: true,
-          installmentsView: true,
-          installmentsAdd: true,
-          installmentsEdit: false,
-          installmentsDelete: false,
-          quotes: true,
-          receipts: true,
-          payments: true,
-          expenses: true,
-          treasury: false,
-          financial_reports: true,
-          projects: true,
-          workers: true,
-          companies: false,
-          users: false,
-          sessions: false,
-          print: true,
-          dashTopCards: true,
-          dashCollection: true,
-          dashPulse: true,
-          dashLateClients: true,
-          dashLastReceipts: true,
-          dashUpcomingPaid: true,
-          region: "",
-          worker_id: null
-        },
+        perms: assignedPerms,
         company_perms: {},
         created_at: new Date().toISOString()
       };
@@ -1996,23 +2260,15 @@ export default function App() {
             return;
           }
 
-          // Check if employee credentials, role, company, permissions, or updated_at changed
-          const permsChanged = JSON.stringify(freshUser.perms || {}) !== JSON.stringify(currentUser.perms || {}) ||
-            JSON.stringify(freshUser.company_perms || {}) !== JSON.stringify(currentUser.company_perms || {});
-          const infoChanged = freshUser.password !== currentUser.password ||
-            freshUser.code !== currentUser.code ||
-            freshUser.role !== currentUser.role ||
-            freshUser.company_id !== currentUser.company_id ||
-            freshUser.status !== currentUser.status ||
-            (freshUser.updated_at && currentUser.updated_at && freshUser.updated_at !== currentUser.updated_at);
-
-          if (permsChanged || infoChanged) {
+          // Check if password explicitly changed by admin
+          if (freshUser.password && currentUser.password && freshUser.password !== currentUser.password) {
             setCurrentUser(null);
             localStorage.removeItem("aw_current_user");
-            showToast("🔒 تم تعديل صلاحيات أو بيانات حسابك فوراً من قبل الإدارة. يرجى إعادة تسجيل الدخول لمتابعة العمل.", "info");
+            showToast("🔒 تم تغيير كلمة المرور لحسابك من قبل الإدارة. يرجى إعادة تسجيل الدخول لمتابعة العمل.", "info");
             return;
           }
 
+          // Dynamically synchronize permissions and user info in real-time without terminating active session
           setCurrentUser(freshUser);
           localStorage.setItem("aw_current_user", JSON.stringify(freshUser));
         } else {
@@ -3717,6 +3973,7 @@ ${attachment ? `
         <tr>
           <td>${idx + 1}</td>
           <td style="text-align: right; padding-right: 15px;">${item.description || "بند توريد وتركيب مواد وأعمال عامة"}</td>
+          <td style="font-weight: bold; color: #8a642d;">${item.unit || "وحدة قطوعة"}</td>
           <td>${item.quantity || 1}</td>
           <td>${Number(item.price || 0).toLocaleString()} ريال</td>
           <td>${Number(item.total || 0).toLocaleString()} ريال</td>
@@ -3804,11 +4061,12 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
   <table>
     <thead>
       <tr>
-        <th style="width: 8%">م</th>
-        <th style="text-align: right; padding-right: 15px; width: 45%">البند والبيان الفني للمواد والأعمال</th>
-        <th style="width: 12%">الكمية</th>
-        <th style="width: 17%">سعر الوحدة</th>
-        <th style="width: 18%">الإجمالي الكلي</th>
+        <th style="width: 6%">م</th>
+        <th style="text-align: right; padding-right: 15px; width: 38%">البند والبيان الفني للمواد والأعمال</th>
+        <th style="width: 16%">الوحدة</th>
+        <th style="width: 10%">الكمية</th>
+        <th style="width: 15%">سعر الوحدة</th>
+        <th style="width: 15%">الإجمالي الكلي</th>
       </tr>
     </thead>
     <tbody>
@@ -3902,7 +4160,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
       setQProject("");
       setQAmount(0);
       setQNotes("");
-      setQItems([{ description: "توريد وتركيب مواد وأعمال عامة", quantity: 1, price: 0, total: 0 }]);
+      setQItems([{ description: "توريد وتركيب مواد وأعمال عامة", unit: "وحدة قطوعة", quantity: 1, price: 0, total: 0 }]);
       await loadEverything();
       showToast("تم حفظ عرض السعر بنجاح!");
     } catch {
@@ -5689,6 +5947,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
       <SaasLandingPortal
         companies={companies}
         onRegisterCompany={handleRegisterCompany}
+        onRegisterUser={handleRegisterUser}
         onRegisterPendingUser={handleRegisterPendingUser}
         onNavigateToSlug={navigateToSlug}
         showToast={showToast}
@@ -5834,15 +6093,44 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
               )}
             </button>
 
-            {/* Authenticator QR Code / 2FA Barcode Button */}
-            <button
-              type="button"
-              onClick={() => setShowAuthModal(true)}
-              className="w-full h-11 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 font-black rounded-2xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md"
-            >
-              <span className="text-sm">📱</span>
-              <span>دخول باركود Authenticator / رمز المصادقة</span>
-            </button>
+            {/* Quick Preset Credentials (Cashier & 2FA) */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginCode("cashier");
+                  setLoginPass("123456");
+                  showToast("💰 تم إدخال بيانات الكاشير (cashier / 123456) - اضغط اعتماد الدخول", "info");
+                }}
+                className="h-11 bg-gradient-to-r from-amber-500/15 to-yellow-500/10 hover:from-amber-500/25 hover:to-yellow-500/20 border border-amber-500/35 text-amber-300 font-black rounded-2xl text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                title="تسجيل دخول كاشير مصرح بكامل صلاحيات الصندوق والتحصيل"
+              >
+                <span>💰</span>
+                <span>دخول كاشير الصندوق</span>
+              </button>
+
+              {/* Authenticator QR Code / 2FA Barcode Button */}
+              <button
+                type="button"
+                onClick={() => setShowAuthModal(true)}
+                className="h-11 bg-slate-900/80 hover:bg-slate-850 border border-slate-800 text-slate-300 hover:text-white font-bold rounded-2xl text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+              >
+                <span className="text-sm">📱</span>
+                <span>باركود 2FA</span>
+              </button>
+            </div>
+
+            {/* Direct Link to Register as New User */}
+            <div className="text-center pt-1">
+              <button
+                type="button"
+                onClick={() => navigateToSlug(null)}
+                className="text-[11px] text-amber-400 hover:text-amber-300 font-bold hover:underline cursor-pointer inline-flex items-center gap-1"
+              >
+                <span>✨ مستخدم جديد؟ اضغط هنا لإنشاء حساب جديد مجاناً</span>
+                <span>←</span>
+              </button>
+            </div>
           </form>
 
           {/* Authenticator Modal Integration for Login */}
@@ -6217,18 +6505,29 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
                     </h4>
                     <button
                       type="button"
-                      onClick={() => setQItems([...qItems, { description: "", quantity: 1, price: 0, total: 0 }])}
+                      onClick={() => setQItems([...qItems, { description: "", unit: "وحدة قطوعة", quantity: 1, price: 0, total: 0 }])}
                       className="px-3 py-1.5 bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white rounded-xl text-[10px] font-black flex items-center gap-1 transition-all border border-blue-500/20"
                     >
                       <Plus className="w-3.5 h-3.5" /> إضافة بند جديد لعرض السعر
                     </button>
                   </div>
+
+                  {/* Column Headers */}
+                  <div className="hidden md:grid md:grid-cols-12 gap-2 px-3 py-1.5 text-[10px] font-black text-slate-400 bg-slate-950/80 rounded-xl border border-slate-800/80 text-center">
+                    <div className="md:col-span-1">#</div>
+                    <div className="md:col-span-4 text-right pr-2">البند والبيان الفني</div>
+                    <div className="md:col-span-2 text-amber-400">الوحدة</div>
+                    <div className="md:col-span-1.5">الكمية</div>
+                    <div className="md:col-span-1.5">سعر الوحدة</div>
+                    <div className="md:col-span-1.5">الإجمالي</div>
+                    <div className="md:col-span-0.5">حذف</div>
+                  </div>
                   
-                  <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
+                  <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
                     {qItems.map((item, index) => (
                       <div key={index} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center bg-slate-950/40 p-3 rounded-2xl border border-slate-800/60 shadow-inner">
                         <div className="md:col-span-1 text-center font-bold text-[10px] text-slate-500">البند {index + 1}</div>
-                        <div className="md:col-span-5">
+                        <div className="md:col-span-4">
                           <input
                             required
                             placeholder="وصف وتفاصيل البند أو المادة أو الأعمال الفنية"
@@ -6242,28 +6541,52 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
                           />
                         </div>
                         <div className="md:col-span-2">
+                          <select
+                            value={item.unit || "وحدة قطوعة"}
+                            onChange={(e) => {
+                              const updated = [...qItems];
+                              updated[index].unit = e.target.value;
+                              setQItems(updated);
+                            }}
+                            className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-[11px] font-bold text-amber-300 focus:outline-none focus:border-amber-500 cursor-pointer text-center"
+                          >
+                            <option value="سانتي متر">📏 سانتي متر (سم)</option>
+                            <option value="وحدة قطوعة">📦 وحدة قطوعة (مقطوعة)</option>
+                            <option value="متر طولي">📐 متر طولي (م.ط)</option>
+                            <option value="متر مربع">⬜ متر مربع (م²)</option>
+                            <option value="متر مكعب">🧊 متر مكعب (م³)</option>
+                            <option value="حبة / قطعة">🧱 حبة / قطعة</option>
+                            <option value="طن">⚖️ طن</option>
+                            <option value="كيلوجرام">⚖️ كيلوجرام (كجم)</option>
+                            <option value="نقطة">💡 نقطة</option>
+                            <option value="ساعة">⏱️ ساعة</option>
+                            <option value="يوم">📅 يوم</option>
+                          </select>
+                        </div>
+                        <div className="md:col-span-1.5">
                           <div className="relative">
                             <input
                               type="number"
                               required
-                              min="1"
+                              min="0.01"
+                              step="any"
                               placeholder="الكمية"
                               value={item.quantity}
                               onChange={(e) => {
-                                const val = Math.max(1, Number(e.target.value || 1));
+                                const val = Math.max(0.01, Number(e.target.value || 1));
                                 const updated = [...qItems];
                                 updated[index].quantity = val;
-                                updated[index].total = val * updated[index].price;
+                                updated[index].total = Math.round(val * updated[index].price * 100) / 100;
                                 setQItems(updated);
                                 const sum = updated.reduce((acc, curr) => acc + curr.total, 0);
                                 setQAmount(sum);
                               }}
-                              className="w-full pl-7 pr-3 py-1.5 bg-slate-950/60 border border-slate-800 rounded-lg text-xs font-bold text-white text-center focus:outline-none font-mono"
+                              className="w-full pl-6 pr-2 py-1.5 bg-slate-950/60 border border-slate-800 rounded-lg text-xs font-bold text-white text-center focus:outline-none font-mono"
                             />
-                            <span className="absolute left-2 top-2 text-[8px] text-slate-500 font-black select-none">الكمية</span>
+                            <span className="absolute left-1.5 top-2 text-[8px] text-slate-500 font-black select-none">كمية</span>
                           </div>
                         </div>
-                        <div className="md:col-span-2">
+                        <div className="md:col-span-1.5">
                           <div className="relative">
                             <input
                               type="number"
@@ -6276,19 +6599,19 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
                                 const val = Math.max(0, Number(e.target.value || 0));
                                 const updated = [...qItems];
                                 updated[index].price = val;
-                                updated[index].total = updated[index].quantity * val;
+                                updated[index].total = Math.round(updated[index].quantity * val * 100) / 100;
                                 setQItems(updated);
                                 const sum = updated.reduce((acc, curr) => acc + curr.total, 0);
                                 setQAmount(sum);
                               }}
-                              className="w-full pl-5 pr-3 py-1.5 bg-slate-950/60 border border-slate-800 rounded-lg text-xs font-bold text-white text-center focus:outline-none font-mono"
+                              className="w-full pl-5 pr-2 py-1.5 bg-slate-950/60 border border-slate-800 rounded-lg text-xs font-bold text-white text-center focus:outline-none font-mono"
                             />
-                            <span className="absolute left-2 top-2 text-[8px] text-slate-500 font-black select-none">ريال</span>
+                            <span className="absolute left-1.5 top-2 text-[8px] text-slate-500 font-black select-none">ريال</span>
                           </div>
                         </div>
                         <div className="md:col-span-1.5 text-center">
                           <span className="text-xs font-black text-emerald-400 font-mono">
-                            {item.total.toLocaleString()} ريال
+                            {Number(item.total || 0).toLocaleString()} ريال
                           </span>
                         </div>
                         <div className="md:col-span-0.5 text-center">
@@ -6301,7 +6624,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
                               const sum = updated.reduce((acc, curr) => acc + curr.total, 0);
                               setQAmount(sum);
                             }}
-                            className="p-1.5 text-rose-400 hover:text-rose-500 disabled:opacity-30 rounded-lg transition-colors"
+                            className="p-1.5 text-rose-400 hover:text-rose-500 disabled:opacity-30 rounded-lg transition-colors cursor-pointer"
                             title="حذف هذا البند"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -6335,7 +6658,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
 
                 <div className="flex gap-2 justify-end">
                   {editQuoteId && (
-                    <button type="button" onClick={() => { setEditQuoteId(null); setQClient(""); setQPhone(""); setQProject(""); setQAmount(0); setQNotes(""); setQItems([{ description: "توريد وتركيب مواد وأعمال عامة", quantity: 1, price: 0, total: 0 }]); setFormCompanyId(""); }} className="px-5 py-2.5 bg-slate-800 rounded-xl text-xs font-black">إلغاء التعديل</button>
+                    <button type="button" onClick={() => { setEditQuoteId(null); setQClient(""); setQPhone(""); setQProject(""); setQAmount(0); setQNotes(""); setQItems([{ description: "توريد وتركيب مواد وأعمال عامة", unit: "وحدة قطوعة", quantity: 1, price: 0, total: 0 }]); setFormCompanyId(""); }} className="px-5 py-2.5 bg-slate-800 rounded-xl text-xs font-black">إلغاء التعديل</button>
                   )}
                   <button type="submit" className="px-5 py-2.5 bg-amber-500 text-slate-950 rounded-xl text-xs font-black">{editQuoteId ? "تأكيد وتحديث العرض الحالي" : "حفظ وحيازة أسعار"}</button>
                 </div>
@@ -9795,6 +10118,50 @@ CREATE TABLE extracts (
               </div>
             </>
           )}
+
+              {/* Fast Cashier Provisioning Banner */}
+              <div className="bg-gradient-to-r from-amber-500/15 via-slate-900 to-amber-500/10 border border-amber-500/35 rounded-3xl p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-2xl shadow-inner shrink-0">
+                    💰
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-black text-amber-300">إضافة وتعيين كاشير معتمد فورياً</h4>
+                      <span className="text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-md">
+                        صلاحيات الصندوق والتحصيل
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-300 font-medium leading-relaxed">
+                      منح صلاحيات الكاشير الكاملة (سندات القبض، سندات الصرف، الخزينة، العقود، والتحصيل) بدون المساس بقاعدة البيانات أو بيانات الشركات الأخرى.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditUserId(null);
+                    setURole("cashier");
+                    const targetCompany = getAuthorizedCompanies().find(c => c.id === selectedCompanyId) || getAuthorizedCompanies()[0];
+                    const compName = targetCompany ? targetCompany.name : "الفرع";
+                    setUName(`كاشير الصندوق (${compName})`);
+                    setUCode(`cashier_${Math.floor(100 + Math.random() * 900)}`);
+                    setUPass("123456");
+                    setUWorkerId("");
+                    setURegion("");
+                    setUCompanyId(targetCompany ? targetCompany.id : "");
+                    setUStatus("نشط");
+                    setSelectedCompanyIdForPerms("global");
+                    setUPerms({ ...CASHIER_DEFAULT_PERMS });
+                    showToast("✓ تم تجهيز بيانات الكاشير بالصلاحيات الكاملة تلقائياً! قم بمراجعة البيانات واضغط حفظ بالأسفل.");
+                  }}
+                  className="px-4 py-2.5 bg-gradient-to-l from-amber-500 via-amber-600 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black rounded-xl text-xs transition-all flex items-center gap-2 shrink-0 cursor-pointer shadow-md shadow-amber-500/20 active:scale-95"
+                  title="تجهيز كاشير معتمد بكامل صلاحيات الصندوق والتحصيل"
+                >
+                  <span>➕</span>
+                  <span>تعبئة كاشير معتمد فورياً</span>
+                </button>
+              </div>
 
               <form onSubmit={saveUserLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
                 <div className="border-b border-slate-850 pb-3">
