@@ -1954,7 +1954,10 @@ tr:nth-child(even) td{background:#f8fafc}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                 <button
                   type="button"
-                  onClick={() => setContractDirection("لنا")}
+                  onClick={() => {
+                    setContractDirection("لنا");
+                    setClassification("مدين");
+                  }}
                   className={`p-3 rounded-xl border text-right transition-all flex items-center justify-between cursor-pointer ${
                     contractDirection === "لنا"
                       ? "bg-emerald-500/15 border-emerald-500 text-emerald-300 font-extrabold shadow-lg"
@@ -1970,7 +1973,10 @@ tr:nth-child(even) td{background:#f8fafc}
 
                 <button
                   type="button"
-                  onClick={() => setContractDirection("علينا")}
+                  onClick={() => {
+                    setContractDirection("علينا");
+                    setClassification("دائن");
+                  }}
                   className={`p-3 rounded-xl border text-right transition-all flex items-center justify-between cursor-pointer ${
                     contractDirection === "علينا"
                       ? "bg-rose-500/15 border-rose-500 text-rose-300 font-extrabold shadow-lg"
@@ -1986,7 +1992,10 @@ tr:nth-child(even) td{background:#f8fafc}
 
                 <button
                   type="button"
-                  onClick={() => setContractDirection("مصروفات عمالة")}
+                  onClick={() => {
+                    setContractDirection("مصروفات عمالة");
+                    setClassification("دائن");
+                  }}
                   className={`p-3 rounded-xl border text-right transition-all flex items-center justify-between cursor-pointer ${
                     contractDirection === "مصروفات عمالة"
                       ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-extrabold shadow-lg"
@@ -2093,7 +2102,15 @@ tr:nth-child(even) td{background:#f8fafc}
               <label className="text-[10px] font-black text-slate-400">تصنيف الحساب (مدين / دائن)</label>
               <select
                 value={classification}
-                onChange={(e) => setClassification(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setClassification(val);
+                  if (val === "دائن" && contractDirection === "لنا") {
+                    setContractDirection("علينا");
+                  } else if (val === "مدين" && contractDirection !== "لنا") {
+                    setContractDirection("لنا");
+                  }
+                }}
                 className="w-full px-3.5 py-2.5 bg-slate-950/40 border border-slate-850 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-blue-500 transition-colors"
               >
                 <option value="مدين">مدين (العميل عليه التزام مالي لنا)</option>

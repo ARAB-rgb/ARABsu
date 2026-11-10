@@ -9,10 +9,10 @@ import {
   Home, ClipboardList, FileText, Landmark, TrendingUp, TrendingDown, Briefcase, Users,
   Settings, LogOut, Calendar, MapPin, User, Phone, Shield, Search, Plus,
   Edit2, Trash2, Download, AlertTriangle, Sparkles, Clock, RefreshCw, Key, Printer, Building, ChevronDown, ChevronUp,
-  PieChart, ShieldAlert, ShieldCheck, List, Map as MapIcon, Filter, Eye, FileSignature
+  PieChart, ShieldAlert, ShieldCheck, List, Map as MapIcon, Filter, Eye, FileSignature, Mail
 } from "lucide-react";
 
-import { User as AuthUser, UserPerms, CASHIER_DEFAULT_PERMS, Installment, Quote, Receipt, Payment, Expense, Project, Worker, DbSession, Company, Extract, AttendanceRecord } from "./types";
+import { User as AuthUser, UserPerms, CASHIER_DEFAULT_PERMS, Installment, Quote, OfficialLetter, Receipt, Payment, Expense, Project, Worker, DbSession, Company, Extract, AttendanceRecord } from "./types";
 import {
   sb, logSession, getContractTiming, awExtractRegion, awCleanNotes, awExtractAttachment,
   awBuildNotesWithRegion, awBuildNotesWithRegionAndTreasury, awBuildNotesWithRegionAndTreasuryAndCapital, awExtractTreasury, awExtractCapital, generateNextNo,
@@ -344,27 +344,48 @@ const getCompanyActivity = (comp?: Company | null): string => {
 };
 
 const getPaymentRemaining = (p: Payment, workersList: Worker[] = [], installmentsList: Installment[] = []): number | null => {
-  if (p.remaining_after !== undefined && p.remaining_after !== null) {
+  // If linked to a contract (directly or by beneficiary name), prioritize the real contract remaining
+  const inst = installmentsList.find(i =>
+    (p.installment_id && i.id === p.installment_id) ||
+    (p.contract_no && i.no === p.contract_no) ||
+    (!p.installment_id && !p.contract_no && p.to_name && i.client && i.client.trim().toLowerCase() === p.to_name.trim().toLowerCase() && (!p.company_id || !i.company_id || i.company_id === p.company_id))
+  );
+  if (inst) {
+    const totalAmt = Number(inst.amount || 0);
+    const rem = Number(inst.remaining !== undefined ? inst.remaining : totalAmt);
+    return Math.max(0, Math.min(totalAmt, rem));
+  }
+
+  // Detect and heal addition corruption where remaining_after was computed as before + amount
+  if (p.remaining_before !== undefined && p.remaining_after !== undefined) {
+    if (Number(p.remaining_after) === Number(p.remaining_before) + Number(p.amount)) {
+      return Math.max(0, Number(p.remaining_before) - Number(p.amount));
+    }
     return Number(p.remaining_after);
   }
+
   if (p.notes) {
     const match = p.notes.match(/\[(?:المتبقي|متبقي|remaining):?\s*([\d\.\-]+)\]/i);
     if (match && match[1] && !isNaN(Number(match[1]))) {
-      return Number(match[1]);
+      const parsed = Number(match[1]);
+      if (p.remaining_before !== undefined && parsed === Number(p.remaining_before) + Number(p.amount)) {
+        return Math.max(0, Number(p.remaining_before) - Number(p.amount));
+      }
+      return parsed;
     }
   }
+
+  if (p.remaining_after !== undefined && p.remaining_after !== null) {
+    return Number(p.remaining_after);
+  }
+
   if (p.worker_id) {
     const w = workersList.find(x => x.id === p.worker_id);
     if (w) {
       return Math.max(0, Number(w.balance || 0));
     }
   }
-  if (p.installment_id || p.contract_no) {
-    const inst = installmentsList.find(i => (p.installment_id && i.id === p.installment_id) || (p.contract_no && i.no === p.contract_no));
-    if (inst) {
-      return Number(inst.remaining || 0);
-    }
-  }
+
   return null;
 };
 
@@ -895,6 +916,7 @@ export default function App() {
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [installments, setInstallments] = useState<Installment[]>([]);
   const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [letters, setLetters] = useState<OfficialLetter[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -907,6 +929,7 @@ export default function App() {
 
   // Editing state markers
   const [editQuoteId, setEditQuoteId] = useState<string | null>(null);
+  const [editLetterId, setEditLetterId] = useState<string | null>(null);
   const [editReceiptId, setEditReceiptId] = useState<string | null>(null);
   const [editPaymentId, setEditPaymentId] = useState<string | null>(null);
   const [editExpenseId, setEditExpenseId] = useState<string | null>(null);
@@ -1012,6 +1035,20 @@ export default function App() {
   const [qItems, setQItems] = useState<{ description: string; unit?: string; quantity: number; price: number; total: number; }[]>([
     { description: "توريد وتركيب مواد وأعمال عامة", unit: "وحدة قطوعة", quantity: 1, price: 0, total: 0 }
   ]);
+
+  // Official Letters Forms (كليشة الخطابات الرسمية)
+  const [letterRecipient, setLetterRecipient] = useState("");
+  const [letterSubject, setLetterSubject] = useState("");
+  const [letterContent, setLetterContent] = useState("");
+  const [letterSignatoryName, setLetterSignatoryName] = useState("م/ إدارة الشركة");
+  const [letterSignatoryTitle, setLetterSignatoryTitle] = useState("المدير العام");
+  const [letterAttachments, setLetterAttachments] = useState("");
+  const [letterCompanyId, setLetterCompanyId] = useState("arab_world");
+  const [letterCompanyName, setLetterCompanyName] = useState("");
+  const [letterStyle, setLetterStyle] = useState<"letterhead" | "standard">("letterhead");
+  const [letterDate, setLetterDate] = useState(new Date().toISOString().slice(0, 10));
+  const [letterSearch, setLetterSearch] = useState("");
+  const [letterCompanyFilter, setLetterCompanyFilter] = useState("all");
 
   // 2. Receipts Forms
   const [rContractQuery, setRContractQuery] = useState("");
@@ -1960,18 +1997,19 @@ export default function App() {
   };
 
   // Queries sync
-  // Audit & Recalculate All Contracts and Receipts to fix corrupted linkages and restore true amounts
+  // Audit & Recalculate All Contracts, Receipts and Payments to fix corrupted linkages, heal addition bugs and restore true amounts
   const auditAndRecalculateAllContractsAndReceipts = async (
     rawInstallments: Installment[],
     rawReceipts: Receipt[],
     rawPayments: Payment[]
   ) => {
     if (!rawInstallments || rawInstallments.length === 0) {
-      return { updatedInstallments: rawInstallments, updatedReceipts: rawReceipts };
+      return { updatedInstallments: rawInstallments, updatedReceipts: rawReceipts, updatedPayments: rawPayments };
     }
 
     const newReceipts = rawReceipts.map(r => ({ ...r }));
     const newInstallments = rawInstallments.map(i => ({ ...i }));
+    const newPayments = (rawPayments || []).map(p => ({ ...p }));
 
     // 0. Audit and Deduplicate Contract Numbers (Ensure each contract has a unique AW-CON-XXXX)
     const claimedNos = new Set<string>();
@@ -2091,15 +2129,111 @@ export default function App() {
       }
     }
 
+    // 1.5. Audit payment linkages and heal addition bug calculations
+    for (let idx = 0; idx < newPayments.length; idx++) {
+      const p = newPayments[idx];
+      const normTo = String(p.to_name || "").trim().replace(/\s+/g, " ").toLowerCase();
+      const normContractNo = String(p.contract_no || "").trim().toUpperCase();
+
+      let targetInst: Installment | null = null;
+      if (p.installment_id) {
+        targetInst = newInstallments.find(i => i.id === p.installment_id) || null;
+        if (targetInst && p.company_id && targetInst.company_id && p.company_id !== targetInst.company_id) {
+          targetInst = null;
+        }
+      }
+      if (!targetInst && normContractNo && normContractNo.startsWith("AW-CON-")) {
+        targetInst = newInstallments.find(i => String(i.no || "").trim().toUpperCase() === normContractNo) || null;
+        if (targetInst && p.company_id && targetInst.company_id && p.company_id !== targetInst.company_id) {
+          targetInst = null;
+        }
+      }
+      if (!targetInst && normTo && !p.installment_id && !p.contract_no) {
+        const matchingByName = newInstallments.filter(i => {
+          const cName = String(i.client || "").trim().replace(/\s+/g, " ").toLowerCase();
+          const matchesName = cName === normTo;
+          const sameCompany = !p.company_id || !i.company_id || i.company_id === p.company_id;
+          return matchesName && sameCompany;
+        });
+        if (matchingByName.length === 1) {
+          targetInst = matchingByName[0];
+        }
+      }
+
+      let updatedP = { ...p };
+      let hasChanges = false;
+
+      if (targetInst) {
+        if (p.installment_id !== targetInst.id || p.contract_no !== targetInst.no) {
+          updatedP.installment_id = targetInst.id;
+          updatedP.contract_no = targetInst.no;
+          hasChanges = true;
+        }
+      } else {
+        if (p.installment_id || p.contract_no) {
+          const conflictingInst = newInstallments.find(i => i.id === p.installment_id || (p.contract_no && i.no === p.contract_no));
+          if (conflictingInst && p.company_id && conflictingInst.company_id && p.company_id !== conflictingInst.company_id) {
+            updatedP.installment_id = null;
+            updatedP.contract_no = "";
+            hasChanges = true;
+          }
+        }
+      }
+
+      const totalContractAmt = targetInst ? Number(targetInst.amount || 0) : null;
+
+      // Fix corrupted addition bug where remaining_after was saved as remaining_before + amount instead of minus
+      if (updatedP.remaining_before !== undefined && updatedP.remaining_after !== undefined) {
+        if (Number(updatedP.remaining_after) === Number(updatedP.remaining_before) + Number(updatedP.amount)) {
+          const correctedRem = Math.max(0, Number(updatedP.remaining_before) - Number(updatedP.amount));
+          updatedP.remaining_after = correctedRem;
+          if (updatedP.notes && updatedP.notes.includes("[المتبقي:")) {
+            updatedP.notes = updatedP.notes.replace(/\[المتبقي:\s*[\d\.\-]+\]/i, `[المتبقي: ${correctedRem}]`);
+          }
+          hasChanges = true;
+        }
+      }
+
+      // If remaining_after > totalContractAmt (the exact issue where 13,672 was shown for a 12,600 contract)
+      if (totalContractAmt && updatedP.remaining_after !== undefined && Number(updatedP.remaining_after) > totalContractAmt) {
+        const correctedRem = Math.max(0, totalContractAmt - Number(updatedP.amount || 0));
+        updatedP.remaining_after = correctedRem;
+        updatedP.remaining_before = totalContractAmt;
+        if (updatedP.notes && updatedP.notes.includes("[المتبقي:")) {
+          updatedP.notes = updatedP.notes.replace(/\[المتبقي:\s*[\d\.\-]+\]/i, `[المتبقي: ${correctedRem}]`);
+        }
+        hasChanges = true;
+      }
+
+      if (hasChanges) {
+        newPayments[idx] = updatedP;
+        sb.from("payments").update({
+          installment_id: updatedP.installment_id,
+          contract_no: updatedP.contract_no,
+          remaining_before: updatedP.remaining_before,
+          remaining_after: updatedP.remaining_after,
+          notes: updatedP.notes
+        }).eq("id", updatedP.id).then(() => {}).catch(() => {});
+      }
+    }
+
     // 2. Recalculate paid, remaining, status for EVERY contract
     for (let idx = 0; idx < newInstallments.length; idx++) {
       const inst = newInstallments[idx];
 
-      const linkedRecs = newReceipts.filter(r => r.installment_id === inst.id || (inst.no && r.contract_no === inst.no));
-      const linkedPays = rawPayments.filter(p => p.installment_id === inst.id || (inst.no && p.contract_no === inst.no));
+      const linkedRecs = newReceipts.filter(r =>
+        (r.installment_id === inst.id && (!inst.company_id || !r.company_id || r.company_id === inst.company_id)) ||
+        (inst.no && r.contract_no === inst.no && (!inst.company_id || !r.company_id || r.company_id === inst.company_id)) ||
+        (!r.installment_id && !r.contract_no && inst.client && r.from_name && r.from_name.trim().toLowerCase() === inst.client.trim().toLowerCase() && (!inst.company_id || !r.company_id || r.company_id === inst.company_id))
+      );
+      const linkedPays = newPayments.filter(p =>
+        (p.installment_id === inst.id && (!inst.company_id || !p.company_id || p.company_id === inst.company_id)) ||
+        (inst.no && p.contract_no === inst.no && (!inst.company_id || !p.company_id || p.company_id === inst.company_id)) ||
+        (!p.installment_id && !p.contract_no && inst.client && p.to_name && p.to_name.trim().toLowerCase() === inst.client.trim().toLowerCase() && (!inst.company_id || !p.company_id || p.company_id === inst.company_id))
+      );
 
       const contractDir = inst.contract_direction || awExtractContractDirection(inst.notes || "") || "لنا";
-      const isExpenseDir = contractDir === "علينا" || contractDir === "مصروفات عمالة";
+      const isExpenseDir = contractDir === "علينا" || contractDir === "مصروفات عمالة" || (inst.classification?.includes("دائن") || false) || awExtractClassification(inst.notes || "") === "دائن";
 
       const paidFromReceipts = linkedRecs.reduce((sum, x) => {
         const isOutgoing = awExtractReceiptType(x.notes || "") === "صادر";
@@ -2122,14 +2256,14 @@ export default function App() {
         netPaid = effectiveDownPayment > 0 ? effectiveDownPayment : Number(inst.paid || 0);
       } else {
         if (isExpenseDir) {
-          netPaid = effectiveDownPayment + (paidOutFromPayments - paidFromReceipts);
+          netPaid = Math.max(0, effectiveDownPayment + paidOutFromPayments - paidFromReceipts);
         } else {
-          netPaid = effectiveDownPayment + (paidFromReceipts - paidOutFromPayments);
+          netPaid = Math.max(0, effectiveDownPayment + paidFromReceipts - paidOutFromPayments);
         }
       }
 
       const totalAmt = Number(inst.amount || 0);
-      const newRemaining = Math.max(0, totalAmt - netPaid);
+      const newRemaining = Math.max(0, Math.min(totalAmt, totalAmt - netPaid));
       const newStatus = newRemaining <= 0 ? "مكتمل" : "منتظم";
 
       if (Number(inst.paid) !== netPaid || Number(inst.remaining) !== newRemaining || inst.status !== newStatus) {
@@ -2148,7 +2282,7 @@ export default function App() {
       }
     }
 
-    return { updatedInstallments: newInstallments, updatedReceipts: newReceipts };
+    return { updatedInstallments: newInstallments, updatedReceipts: newReceipts, updatedPayments: newPayments };
   };
 
   const loadEverything = async () => {
@@ -2175,12 +2309,56 @@ export default function App() {
       const rawRec = rec.data || [];
       const rawPay = pay.data || [];
 
-      const { updatedInstallments, updatedReceipts } = await auditAndRecalculateAllContractsAndReceipts(rawInst, rawRec, rawPay);
+      const { updatedInstallments, updatedReceipts, updatedPayments } = await auditAndRecalculateAllContractsAndReceipts(rawInst, rawRec, rawPay);
 
       setInstallments(updatedInstallments);
       setReceipts(updatedReceipts);
+      setPayments(updatedPayments || rawPay);
       setQuotes(q.data || []);
-      setPayments(rawPay);
+
+      // Load official letters
+      let loadedLetters: OfficialLetter[] = [];
+      const storedLetters = localStorage.getItem("aw_official_letters");
+      if (storedLetters) {
+        try {
+          loadedLetters = JSON.parse(storedLetters);
+        } catch {
+          loadedLetters = [];
+        }
+      }
+      if (!loadedLetters || loadedLetters.length === 0) {
+        loadedLetters = [
+          {
+            id: "ltr-001",
+            company_id: "arab_world",
+            no: "AW-LTR-0001",
+            date: new Date().toISOString().slice(0, 10),
+            recipient: "شركة مدارات البناء للتطوير العقاري",
+            subject: "تعميد وترسية أعمال المقاولات العامة والإنشاءات - مشروع برج الأفق",
+            content: `يسر شركة عرب وورلد للمقاولات إحاطة عنايتكم الكريمة بأنه تم اعتماد وترسية تنفيذ أعمال المقاولات العامة وأعمال البنية التحتية والتشطيبات للمشروع المذكور أعلاه وفقاً للمخططات المعتمدة وعرض السعر رقم (AW-Q-0004).\n\nآملين من سعادتكم التكرم باتخاذ اللازم نحو التنسيق الميداني لاستلام الموقع والبدء الفوري في توريد المواد وبدء المراحل التنفيذية المجدولة زمنياً.`,
+            signatory_name: "م/ فهد الدوسري",
+            signatory_title: "المدير العام",
+            attachments: "جدول الكميات والمواصفات المعتمدة",
+            created_at: new Date().toISOString()
+          },
+          {
+            id: "ltr-002",
+            company_id: "arab_world",
+            no: "AW-LTR-0002",
+            date: new Date().toISOString().slice(0, 10),
+            recipient: "مؤسسة رواسي الخليج للمقاولات العامة",
+            subject: "مطالبة مالية بصرف مستحقات المستخلص الجاري رقم (03)",
+            content: `بالإشارة إلى العقد التنفيذي المبرم بيننا لمشروع الخرج السكني، ونظراً لإنجاز كافة الأعمال والبنود المقررة في المستخلص الجاري بنسبة 100% واعتمادها من قبل الاستشاري المشرف، نرجو التكرم بصرف المستحقات المالية المستحقة وقدرها (185,000 ريال) مائة وخمسة وثمانون ألف ريال سعودي لحسابنا البنكي المعتمد.`,
+            signatory_name: "أ/ عبد الرحمن الخالدي",
+            signatory_title: "مدير الإدارة المالية",
+            attachments: "محضر معاينة الموقع ومستخلص الأعمال رقم 3",
+            created_at: new Date().toISOString()
+          }
+        ];
+        localStorage.setItem("aw_official_letters", JSON.stringify(loadedLetters));
+      }
+      setLetters(loadedLetters);
+
       setExpenses(exp.data || []);
       setProjects(pr.data || []);
       setWorkers(w.data || []);
@@ -2779,6 +2957,7 @@ export default function App() {
         else if (activeSection === "installments") isAllowed = hasAccess("installmentsView");
         else if (activeSection === "subcontracts") isAllowed = !isAttendanceOnly && hasAccess("installmentsView");
         else if (activeSection === "quotes") isAllowed = hasAccess("quotes");
+        else if (activeSection === "letters") isAllowed = hasAccess("quotes") || hasAccess("letters");
         else if (activeSection === "receipts") isAllowed = hasAccess("receipts");
         else if (activeSection === "payments") isAllowed = hasAccess("payments");
         else if (activeSection === "expenses") isAllowed = hasAccess("expenses");
@@ -2975,27 +3154,51 @@ export default function App() {
     const linked = Array.isArray(freshInstData) ? freshInstData[0] : freshInstData;
     if (!linked) return;
 
-    const [recByInst, recByNo, payByInst, payByNo] = await Promise.all([
+    const [recByInst, recByNo, recByClient, payByInst, payByNo, payByClient] = await Promise.all([
       sb.from("receipts").select("*").eq("installment_id", installmentId),
       linked.no ? sb.from("receipts").select("*").eq("contract_no", linked.no) : Promise.resolve({ data: [], error: null }),
+      linked.client ? sb.from("receipts").select("*").eq("from_name", linked.client) : Promise.resolve({ data: [], error: null }),
       sb.from("payments").select("*").eq("installment_id", installmentId),
       linked.no ? sb.from("payments").select("*").eq("contract_no", linked.no) : Promise.resolve({ data: [], error: null }),
+      linked.client ? sb.from("payments").select("*").eq("to_name", linked.client) : Promise.resolve({ data: [], error: null }),
     ]);
 
     // Merge receipts uniquely
     const recMap = new Map<string, any>();
-    (recByInst.data || []).forEach((r: any) => { if (r?.id) recMap.set(r.id, r); });
-    (recByNo.data || []).forEach((r: any) => { if (r?.id) recMap.set(r.id, r); });
+    (recByInst.data || []).forEach((r: any) => {
+      if (r?.id && (!linked.company_id || !r.company_id || r.company_id === linked.company_id)) recMap.set(r.id, r);
+    });
+    (recByNo.data || []).forEach((r: any) => {
+      if (r?.id && (!linked.company_id || !r.company_id || r.company_id === linked.company_id)) recMap.set(r.id, r);
+    });
+    (recByClient.data || []).forEach((r: any) => {
+      if (!r?.id) return;
+      if (r.installment_id && r.installment_id !== installmentId) return;
+      if (r.contract_no && linked.no && r.contract_no !== linked.no) return;
+      if (linked.company_id && r.company_id && r.company_id !== linked.company_id) return;
+      recMap.set(r.id, r);
+    });
     const allReceipts = Array.from(recMap.values());
 
     // Merge payments uniquely
     const payMap = new Map<string, any>();
-    (payByInst.data || []).forEach((p: any) => { if (p?.id) payMap.set(p.id, p); });
-    (payByNo.data || []).forEach((p: any) => { if (p?.id) payMap.set(p.id, p); });
+    (payByInst.data || []).forEach((p: any) => {
+      if (p?.id && (!linked.company_id || !p.company_id || p.company_id === linked.company_id)) payMap.set(p.id, p);
+    });
+    (payByNo.data || []).forEach((p: any) => {
+      if (p?.id && (!linked.company_id || !p.company_id || p.company_id === linked.company_id)) payMap.set(p.id, p);
+    });
+    (payByClient.data || []).forEach((p: any) => {
+      if (!p?.id) return;
+      if (p.installment_id && p.installment_id !== installmentId) return;
+      if (p.contract_no && linked.no && p.contract_no !== linked.no) return;
+      if (linked.company_id && p.company_id && p.company_id !== linked.company_id) return;
+      payMap.set(p.id, p);
+    });
     const allPayments = Array.from(payMap.values());
 
     const contractDir = linked.contract_direction || awExtractContractDirection(linked.notes || "") || "لنا";
-    const isExpenseDir = contractDir === "علينا" || contractDir === "مصروفات عمالة";
+    const isExpenseDir = contractDir === "علينا" || contractDir === "مصروفات عمالة" || (linked.classification?.includes("دائن") || false) || awExtractClassification(linked.notes || "") === "دائن";
 
     const paidFromReceipts = allReceipts.reduce((sum, x) => {
       const isOutgoing = awExtractReceiptType(x.notes || "") === "صادر";
@@ -3023,16 +3226,16 @@ export default function App() {
       netPaid = effectiveDownPayment > 0 ? effectiveDownPayment : Number(linked.paid || 0);
     } else {
       if (isExpenseDir) {
-        // For "علينا" / "مصروفات عمالة": Payments (+) add to paid, Receipts (-) deduct from paid
-        netPaid = effectiveDownPayment + (paidOutFromPayments - paidFromReceipts);
+        // For "علينا" / "مصروفات عمالة": Payments (+) add to paid towards contractor debt
+        netPaid = Math.max(0, effectiveDownPayment + paidOutFromPayments - paidFromReceipts);
       } else {
-        // For "لنا": Receipts (+) add to paid, Payments (-) deduct from paid
-        netPaid = effectiveDownPayment + (paidFromReceipts - paidOutFromPayments);
+        // For "لنا": Receipts (+) add to paid
+        netPaid = Math.max(0, effectiveDownPayment + paidFromReceipts - paidOutFromPayments);
       }
     }
 
     const contractTotal = Number(linked.amount || 0);
-    const newRemaining = Math.max(0, contractTotal - netPaid);
+    const newRemaining = Math.max(0, Math.min(contractTotal, contractTotal - netPaid));
     const newStatus = newRemaining <= 0 ? "مكتمل" : "منتظم";
 
     await sb
@@ -3617,32 +3820,223 @@ ${attachment ? `
 <meta charset="UTF-8">
 <title>سند قبض مالي - رقم ${r.no}</title>
 <style>
-*{box-sizing:border-box;font-family:Tahoma,Arial}
-body{margin:0;background:#f4f6fa;color:#07153a;padding:24px}
-.page{width:210mm;min-height:297mm;margin:auto;background:white;padding:20mm;box-shadow:0 10px 35px #0002;position:relative;border-radius:12px}
-.head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #10b981;padding-bottom:18px;margin-bottom:20px}
-.brand{text-align:center;flex:1}
-.brand h1{margin:0;font-size:28px;color:#07153a}
-.brand p{margin:8px 0 0;color:#059669;font-weight:bold}
-.logo{width:54px;height:65px;position:relative;margin:auto}
-.logo:before,.logo:after{content:"";position:absolute;border:5px solid #111827;border-left:0;border-bottom:0;transform:skewY(-25deg)}
-.logo:before{width:30px;height:55px;right:18px;top:0}
-.logo:after{width:16px;height:45px;right:8px;top:10px;border-color:#10b981}
-.title{background:linear-gradient(90deg,#07153a,#10b981);color:white;text-align:center;padding:12px;border-radius:10px;font-size:20px;margin:20px 0;letter-spacing:1px}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
-.box{border:1px solid #d9dee8;border-radius:10px;padding:9.5px;background:#fbfcff;min-height:54px}
-.box b{display:block;color:#047857;margin-bottom:4px;font-size:11px}
-.box span{font-size:13.5px;font-weight:bold}
-.amount-wrapper{text-align:center;background:#ecfdf5;border:2px dashed #34d399;border-radius:12px;padding:18px;margin:25px 0}
-.amount-wrapper b{display:block;color:#065f46;font-size:14px;margin-bottom:6px}
-.amount-wrapper span{font-size:28px;color:#047857;font-weight:900;font-family:monospace}
-.signs{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:45px}
-.sign{height:100px;border-top:1px dashed #777;padding-top:10px;text-align:center;color:#333;font-weight:bold;font-size:12px}
-.footer{position:absolute;bottom:12mm;left:20mm;right:20mm;text-align:center;color:#666;font-size:10px;border-top:1px solid #eee;padding-top:10px}
-.no-print{position:fixed;top:15px;left:15px;display:flex;gap:8px}
-.no-print button{border:0;border-radius:10px;padding:10px 15px;color:white;cursor:pointer;font-weight:bold}
-.print{background:#10b981}.close{background:#64748b}
-@media print{body{background:white;padding:0}.page{box-shadow:none;margin:0;width:auto;min-height:auto}.no-print{display:none}}
+* {
+  box-sizing: border-box;
+  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
+}
+body {
+  margin: 0;
+  background: #f1f5f9;
+  color: #0f172a;
+  padding: 24px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.page {
+  width: 210mm;
+  min-height: 297mm;
+  margin: auto;
+  background: #ffffff !important;
+  padding: 18mm 20mm;
+  box-shadow: 0 10px 35px rgba(0,0,0,0.12);
+  position: relative;
+  border-radius: 8px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 3px solid #059669 !important;
+  padding-bottom: 16px;
+  margin-bottom: 18px;
+}
+.brand {
+  text-align: center;
+  flex: 1;
+}
+.brand h1 {
+  margin: 0;
+  font-size: 26px;
+  color: #0f172a !important;
+  font-weight: 900;
+}
+.brand p {
+  margin: 6px 0 0;
+  color: #059669 !important;
+  font-weight: 800;
+  font-size: 13px;
+}
+.logo {
+  width: 54px;
+  height: 65px;
+  position: relative;
+  margin: auto;
+}
+.logo:before, .logo:after {
+  content: "";
+  position: absolute;
+  border: 5px solid #111827;
+  border-left: 0;
+  border-bottom: 0;
+  transform: skewY(-25deg);
+}
+.logo:before {
+  width: 30px;
+  height: 55px;
+  right: 18px;
+  top: 0;
+}
+.logo:after {
+  width: 16px;
+  height: 45px;
+  right: 8px;
+  top: 10px;
+  border-color: #059669;
+}
+.title {
+  background-color: #0f172a !important;
+  color: #ffffff !important;
+  text-align: center;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 16px;
+  margin: 16px 0;
+  letter-spacing: 0.5px;
+  font-weight: 800;
+  border: 2px solid #0f172a !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.box {
+  border: 1.5px solid #475569 !important;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background-color: #f8fafc !important;
+  min-height: 52px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.box b {
+  display: block;
+  color: #047857 !important;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.box span {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #0f172a !important;
+}
+.amount-wrapper {
+  text-align: center;
+  background-color: #ecfdf5 !important;
+  border: 2.5px solid #059669 !important;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 20px 0;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.amount-wrapper b {
+  display: block;
+  color: #065f46 !important;
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+.amount-wrapper span {
+  font-size: 26px;
+  color: #047857 !important;
+  font-weight: 900;
+  font-family: monospace;
+}
+.signs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  margin-top: 35px;
+}
+.sign {
+  height: 90px;
+  border-top: 1.5px dashed #0f172a !important;
+  padding-top: 10px;
+  text-align: center;
+  color: #0f172a !important;
+  font-weight: 800;
+  font-size: 12px;
+}
+.footer {
+  position: absolute;
+  bottom: 10mm;
+  left: 18mm;
+  right: 18mm;
+  text-align: center;
+  color: #334155 !important;
+  font-size: 10.5px;
+  font-weight: 700;
+  border-top: 1px solid #cbd5e1;
+  padding-top: 8px;
+}
+.no-print {
+  position: fixed;
+  top: 15px;
+  left: 15px;
+  display: flex;
+  gap: 8px;
+  z-index: 9999;
+}
+.no-print button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  color: white;
+  cursor: pointer;
+  font-weight: bold;
+}
+.print {
+  background: #10b981;
+}
+.close {
+  background: #475569;
+}
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+  html, body {
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    color: #0f172a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  .page {
+    box-shadow: none !important;
+    margin: 0 !important;
+    width: 100% !important;
+    min-height: auto !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
 </style>
 </head>
 <body>
@@ -3737,32 +4131,223 @@ ${attachment ? `
 <meta charset="UTF-8">
 <title>سند صرف مالي - رقم ${p.no}</title>
 <style>
-*{box-sizing:border-box;font-family:Tahoma,Arial}
-body{margin:0;background:#f4f6fa;color:#07153a;padding:24px}
-.page{width:210mm;min-height:297mm;margin:auto;background:white;padding:20mm;box-shadow:0 10px 35px #0002;position:relative;border-radius:12px}
-.head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #dc2626;padding-bottom:18px;margin-bottom:20px}
-.brand{text-align:center;flex:1}
-.brand h1{margin:0;font-size:26px;color:#07153a}
-.brand p{margin:6px 0 0;color:#dc2626;font-weight:bold;font-size:12px}
-.logo{width:54px;height:65px;position:relative;margin:auto}
-.logo:before,.logo:after{content:"";position:absolute;border:5px solid #111827;border-left:0;border-bottom:0;transform:skewY(-25deg)}
-.logo:before{width:30px;height:55px;right:18px;top:0}
-.logo:after{width:16px;height:45px;right:8px;top:10px;border-color:#dc2626}
-.title{background:linear-gradient(90deg,#07153a,#dc2626);color:white;text-align:center;padding:12px;border-radius:10px;font-size:20px;margin:20px 0;letter-spacing:1px;font-weight:bold}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
-.box{border:1px solid #d9dee8;border-radius:10px;padding:9.5px;background:#fbfcff;min-height:54px}
-.box b{display:block;color:#991b1b;margin-bottom:4px;font-size:11px}
-.box span{font-size:13.5px;font-weight:bold}
-.amount-wrapper{text-align:center;background:#fef2f2;border:2px dashed #f87171;border-radius:12px;padding:18px;margin:25px 0}
-.amount-wrapper b{display:block;color:#991b1b;font-size:14px;margin-bottom:6px}
-.amount-wrapper span{font-size:28px;color:#dc2626;font-weight:900;font-family:monospace}
-.signs{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:45px}
-.sign{height:100px;border-top:1px dashed #777;padding-top:10px;text-align:center;color:#333;font-weight:bold;font-size:12px}
-.footer{position:absolute;bottom:12mm;left:20mm;right:20mm;text-align:center;color:#666;font-size:10px;border-top:1px solid #eee;padding-top:10px}
-.no-print{position:fixed;top:15px;left:15px;display:flex;gap:8px}
-.no-print button{border:0;border-radius:10px;padding:10px 15px;color:white;cursor:pointer;font-weight:bold}
-.print{background:#dc2626}.close{background:#64748b}
-@media print{body{background:white;padding:0}.page{box-shadow:none;margin:0;width:auto;min-height:auto}.no-print{display:none}}
+* {
+  box-sizing: border-box;
+  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
+}
+body {
+  margin: 0;
+  background: #f1f5f9;
+  color: #0f172a;
+  padding: 24px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.page {
+  width: 210mm;
+  min-height: 297mm;
+  margin: auto;
+  background: #ffffff !important;
+  padding: 18mm 20mm;
+  box-shadow: 0 10px 35px rgba(0,0,0,0.12);
+  position: relative;
+  border-radius: 8px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 3px solid #dc2626 !important;
+  padding-bottom: 16px;
+  margin-bottom: 18px;
+}
+.brand {
+  text-align: center;
+  flex: 1;
+}
+.brand h1 {
+  margin: 0;
+  font-size: 26px;
+  color: #0f172a !important;
+  font-weight: 900;
+}
+.brand p {
+  margin: 6px 0 0;
+  color: #dc2626 !important;
+  font-weight: 800;
+  font-size: 13px;
+}
+.logo {
+  width: 54px;
+  height: 65px;
+  position: relative;
+  margin: auto;
+}
+.logo:before, .logo:after {
+  content: "";
+  position: absolute;
+  border: 5px solid #111827;
+  border-left: 0;
+  border-bottom: 0;
+  transform: skewY(-25deg);
+}
+.logo:before {
+  width: 30px;
+  height: 55px;
+  right: 18px;
+  top: 0;
+}
+.logo:after {
+  width: 16px;
+  height: 45px;
+  right: 8px;
+  top: 10px;
+  border-color: #dc2626;
+}
+.title {
+  background-color: #0f172a !important;
+  color: #ffffff !important;
+  text-align: center;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 16px;
+  margin: 16px 0;
+  letter-spacing: 0.5px;
+  font-weight: 800;
+  border: 2px solid #0f172a !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.box {
+  border: 1.5px solid #475569 !important;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background-color: #f8fafc !important;
+  min-height: 52px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.box b {
+  display: block;
+  color: #991b1b !important;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.box span {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #0f172a !important;
+}
+.amount-wrapper {
+  text-align: center;
+  background-color: #fef2f2 !important;
+  border: 2.5px solid #dc2626 !important;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 20px 0;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.amount-wrapper b {
+  display: block;
+  color: #991b1b !important;
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+.amount-wrapper span {
+  font-size: 26px;
+  color: #dc2626 !important;
+  font-weight: 900;
+  font-family: monospace;
+}
+.signs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  margin-top: 35px;
+}
+.sign {
+  height: 90px;
+  border-top: 1.5px dashed #0f172a !important;
+  padding-top: 10px;
+  text-align: center;
+  color: #0f172a !important;
+  font-weight: 800;
+  font-size: 12px;
+}
+.footer {
+  position: absolute;
+  bottom: 10mm;
+  left: 18mm;
+  right: 18mm;
+  text-align: center;
+  color: #334155 !important;
+  font-size: 10.5px;
+  font-weight: 700;
+  border-top: 1px solid #cbd5e1;
+  padding-top: 8px;
+}
+.no-print {
+  position: fixed;
+  top: 15px;
+  left: 15px;
+  display: flex;
+  gap: 8px;
+  z-index: 9999;
+}
+.no-print button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  color: white;
+  cursor: pointer;
+  font-weight: bold;
+}
+.print {
+  background: #dc2626;
+}
+.close {
+  background: #475569;
+}
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+  html, body {
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    color: #0f172a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  .page {
+    box-shadow: none !important;
+    margin: 0 !important;
+    width: 100% !important;
+    min-height: auto !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
 </style>
 </head>
 <body>
@@ -3859,32 +4444,223 @@ ${attachment ? `
 <meta charset="UTF-8">
 <title>سند قيد مصروف - رقم ${e.no}</title>
 <style>
-*{box-sizing:border-box;font-family:Tahoma,Arial}
-body{margin:0;background:#f4f6fa;color:#07153a;padding:24px}
-.page{width:210mm;min-height:297mm;margin:auto;background:white;padding:20mm;box-shadow:0 10px 35px #0002;position:relative;border-radius:12px}
-.head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #f59e0b;padding-bottom:18px;margin-bottom:20px}
-.brand{text-align:center;flex:1}
-.brand h1{margin:0;font-size:26px;color:#07153a}
-.brand p{margin:6px 0 0;color:#d97706;font-weight:bold;font-size:12px}
-.logo{width:54px;height:65px;position:relative;margin:auto}
-.logo:before,.logo:after{content:"";position:absolute;border:5px solid #111827;border-left:0;border-bottom:0;transform:skewY(-25deg)}
-.logo:before{width:30px;height:55px;right:18px;top:0}
-.logo:after{width:16px;height:45px;right:8px;top:10px;border-color:#f59e0b}
-.title{background:linear-gradient(90deg,#07153a,#f59e0b);color:white;text-align:center;padding:12px;border-radius:10px;font-size:20px;margin:20px 0;letter-spacing:1px;font-weight:bold}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
-.box{border:1px solid #d9dee8;border-radius:10px;padding:9.5px;background:#fbfcff;min-height:54px}
-.box b{display:block;color:#b45309;margin-bottom:4px;font-size:11px}
-.box span{font-size:13.5px;font-weight:bold}
-.amount-wrapper{text-align:center;background:#fffbeb;border:2px dashed #fcd34d;border-radius:12px;padding:18px;margin:25px 0}
-.amount-wrapper b{display:block;color:#92400e;font-size:14px;margin-bottom:6px}
-.amount-wrapper span{font-size:28px;color:#b45309;font-weight:900;font-family:monospace}
-.signs{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:45px}
-.sign{height:100px;border-top:1px dashed #777;padding-top:10px;text-align:center;color:#333;font-weight:bold;font-size:12px}
-.footer{position:absolute;bottom:12mm;left:20mm;right:20mm;text-align:center;color:#666;font-size:10px;border-top:1px solid #eee;padding-top:10px}
-.no-print{position:fixed;top:15px;left:15px;display:flex;gap:8px}
-.no-print button{border:0;border-radius:10px;padding:10px 15px;color:white;cursor:pointer;font-weight:bold}
-.print{background:#f59e0b;color:#1e293b}.close{background:#64748b}
-@media print{body{background:white;padding:0}.page{box-shadow:none;margin:0;width:auto;min-height:auto}.no-print{display:none}}
+* {
+  box-sizing: border-box;
+  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
+}
+body {
+  margin: 0;
+  background: #f1f5f9;
+  color: #0f172a;
+  padding: 24px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.page {
+  width: 210mm;
+  min-height: 297mm;
+  margin: auto;
+  background: #ffffff !important;
+  padding: 18mm 20mm;
+  box-shadow: 0 10px 35px rgba(0,0,0,0.12);
+  position: relative;
+  border-radius: 8px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 3px solid #d97706 !important;
+  padding-bottom: 16px;
+  margin-bottom: 18px;
+}
+.brand {
+  text-align: center;
+  flex: 1;
+}
+.brand h1 {
+  margin: 0;
+  font-size: 26px;
+  color: #0f172a !important;
+  font-weight: 900;
+}
+.brand p {
+  margin: 6px 0 0;
+  color: #d97706 !important;
+  font-weight: 800;
+  font-size: 13px;
+}
+.logo {
+  width: 54px;
+  height: 65px;
+  position: relative;
+  margin: auto;
+}
+.logo:before, .logo:after {
+  content: "";
+  position: absolute;
+  border: 5px solid #111827;
+  border-left: 0;
+  border-bottom: 0;
+  transform: skewY(-25deg);
+}
+.logo:before {
+  width: 30px;
+  height: 55px;
+  right: 18px;
+  top: 0;
+}
+.logo:after {
+  width: 16px;
+  height: 45px;
+  right: 8px;
+  top: 10px;
+  border-color: #f59e0b;
+}
+.title {
+  background-color: #0f172a !important;
+  color: #ffffff !important;
+  text-align: center;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 16px;
+  margin: 16px 0;
+  letter-spacing: 0.5px;
+  font-weight: 800;
+  border: 2px solid #0f172a !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.box {
+  border: 1.5px solid #475569 !important;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background-color: #f8fafc !important;
+  min-height: 52px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.box b {
+  display: block;
+  color: #b45309 !important;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.box span {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #0f172a !important;
+}
+.amount-wrapper {
+  text-align: center;
+  background-color: #fffbeb !important;
+  border: 2.5px solid #d97706 !important;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 20px 0;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.amount-wrapper b {
+  display: block;
+  color: #92400e !important;
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+.amount-wrapper span {
+  font-size: 26px;
+  color: #b45309 !important;
+  font-weight: 900;
+  font-family: monospace;
+}
+.signs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  margin-top: 35px;
+}
+.sign {
+  height: 90px;
+  border-top: 1.5px dashed #0f172a !important;
+  padding-top: 10px;
+  text-align: center;
+  color: #0f172a !important;
+  font-weight: 800;
+  font-size: 12px;
+}
+.footer {
+  position: absolute;
+  bottom: 10mm;
+  left: 18mm;
+  right: 18mm;
+  text-align: center;
+  color: #334155 !important;
+  font-size: 10.5px;
+  font-weight: 700;
+  border-top: 1px solid #cbd5e1;
+  padding-top: 8px;
+}
+.no-print {
+  position: fixed;
+  top: 15px;
+  left: 15px;
+  display: flex;
+  gap: 8px;
+  z-index: 9999;
+}
+.no-print button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  color: white;
+  cursor: pointer;
+  font-weight: bold;
+}
+.print {
+  background: #d97706;
+}
+.close {
+  background: #475569;
+}
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+  html, body {
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    color: #0f172a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  .page {
+    box-shadow: none !important;
+    margin: 0 !important;
+    width: 100% !important;
+    min-height: auto !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
 </style>
 </head>
 <body>
@@ -3954,12 +4730,24 @@ ${attachment ? `
   const onPrintQuote = (q: Quote) => {
     try {
       const parsed = deserializeQuoteNotes(q.notes, q.amount);
-      const company = companies.find((c) => c.id === q.company_id) || companies[0];
-      const companyName = company ? company.name : "المؤسسة لخدمات المقاولات العامة";
-      const crNumber = company ? company.commercial_register || "لا يوجد" : "غير مسجل";
-      const taxNumber = company ? company.tax_no || "لا يوجد" : "غير مسجل";
-      const address = company ? company.address || "لا يوجد" : "غير مسجل";
-      const phone = company ? company.phone || "لا يوجد" : "غير مسجل";
+      const assocCompanyId = q.company_id || "arab_world";
+      const company = companies.find((c) => c.id === assocCompanyId) || companies.find((c) => c.id === "arab_world") || companies[0];
+      const companyName = company?.name || "شركة عرب وورلد للمقاولات";
+      const crNumber = company ? company.commercial_register || company.record_no || "" : "";
+      const taxNumber = company ? company.tax_no || "" : "";
+      const compPhone = company?.phone || "0539853287";
+      const compAddress = company?.address || "المملكة العربية السعودية";
+      const compEmail = company?.email || "info@arab1000.online";
+      const compActivity = (company as any)?.activity || (company as any)?.sub_title || "";
+
+      // Dynamic Letterhead & Logo Resolution per company
+      const customLetterhead = localStorage.getItem(`aw_company_letterhead_${assocCompanyId}`) || (company as any)?.letterhead_url || "";
+      const customLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || company?.logo_url || "";
+      const isArabWorld = assocCompanyId === "arab_world" || companyName.includes("عرب وورلد للمقاولات");
+
+      // Full-page background ONLY if custom letterhead uploaded OR it is Arab World Contracting
+      const hasLetterheadBg = Boolean(customLetterhead || (isArabWorld && !customLetterhead));
+      const letterheadBgUrl = customLetterhead || (isArabWorld ? `${window.location.origin}/assets/letterhead_arab_world.png` : "");
 
       const w = window.open("", "_blank");
       if (!w) {
@@ -3971,12 +4759,12 @@ ${attachment ? `
         .map(
           (item: any, idx: number) => `
         <tr>
-          <td>${idx + 1}</td>
-          <td style="text-align: right; padding-right: 15px;">${item.description || "بند توريد وتركيب مواد وأعمال عامة"}</td>
-          <td style="font-weight: bold; color: #8a642d;">${item.unit || "وحدة قطوعة"}</td>
-          <td>${item.quantity || 1}</td>
-          <td>${Number(item.price || 0).toLocaleString()} ريال</td>
-          <td>${Number(item.total || 0).toLocaleString()} ريال</td>
+          <td style="font-weight: 800; color: #071838; width: 5%;">${idx + 1}</td>
+          <td style="text-align: right; padding: 7px 10px; font-weight: 700; color: #071838; width: 43%; line-height: 1.4;">${item.description || "بند توريد وتركيب مواد وأعمال عامة"}</td>
+          <td style="font-weight: 800; color: #8a642d; background-color: #fffbeb; width: 14%;">${item.unit || "وحدة قطوعة"}</td>
+          <td style="font-weight: 800; color: #071838; width: 10%;">${item.quantity || 1}</td>
+          <td style="font-weight: 800; color: #071838; width: 14%;">${Number(item.price || 0).toLocaleString()} ريال</td>
+          <td style="font-weight: 900; color: #071838; background-color: #f8fafc; width: 14%;">${Number(item.total || 0).toLocaleString()} ريال</td>
         </tr>
       `
         )
@@ -3989,122 +4777,517 @@ ${attachment ? `
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title>عرض سعر - ${q.client}</title>
+<title>عرض سعر رسمي رقم ${q.no} - ${companyName} - ${q.client}</title>
 <style>
-*{box-sizing:border-box;font-family:Tahoma,Arial}
-body{margin:0;background:#f4f6fa;color:#07153a;padding:24px}
-.page{width:210mm;min-height:297mm;margin:auto;background:white;padding:20mm;box-shadow:0 10px 35px #0002;position:relative;border-radius:12px}
-.head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #c9963f;padding-bottom:18px;margin-bottom:20px}
-.brand{text-align:right;}
-.brand h1{margin:0;font-size:24px;color:#07153a}
-.brand p{margin:4px 0 0;color:#555;font-size:12px}
-.quote-meta {text-align: left;}
-.quote-meta h2 {margin:0;font-size:22px;color:#c9963f;}
-.quote-meta p {margin:4px 0 0;color:#555;font-size:12px;font-family:monospace}
-.logo{width:54px;height:65px;position:relative;margin:auto}
-.logo:before,.logo:after{content:"";position:absolute;border:5px solid #1f2937;border-left:0;border-bottom:0;transform:skewY(-25deg)}
-.logo:before{width:30px;height:55px;right:18px;top:0}
-.logo:after{width:16px;height:45px;right:8px;top:10px;border-color:#c9963f}
-.title{background:linear-gradient(90deg,#07153a,#c9963f);color:white;text-align:center;padding:12px;border-radius:10px;font-size:18px;margin:20px 0;font-weight:bold}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
-.box{border:1px solid #d9dee8;border-radius:10px;padding:9.5px;background:#fbfcff;min-height:54px}
-.box b{display:block;color:#8a642d;margin-bottom:4px;font-size:11px}
-.box span{font-size:13px;font-weight:bold}
-table{width:100%;border-collapse:collapse;margin-top:14px;font-size:12px}
-th{background:#07153a;color:white;padding:10px;font-weight:bold;font-size:11px}
-td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
-.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}
-.sum{border-top:4px solid #c9963f;background:#f8fafc;border-radius:14px;text-align:center;padding:13px}
-.sum b{display:block;color:#07153a;margin-bottom:8px;font-size:12px}
-.sum span{font-size:18px;color:#07153a;font-weight:bold}
-.sum.grand-total {border-top-color: #10b981; background: #ecfdf5;}
-.sum.grand-total span {color: #10b981; font-size: 20px;}
-.signs{display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:35px}
-.sign{height:90px;border-top:1px dashed #555;padding-top:10px;text-align:center;color:#333;font-weight:bold}
-.footer{position:absolute;bottom:12mm;left:20mm;right:20mm;text-align:center;color:#777;font-size:10px;border-top:1px solid #eee;padding-top:8px}
-.no-print{position:fixed;top:15px;left:15px;display:flex;gap:8px}
-.no-print button{border:0;border-radius:10px;padding:10px 15px;color:white;cursor:pointer;font-weight:bold}
-.print{background:#16a34a}.close{background:#64748b}
-@media print{body{background:white;padding:0}.page{box-shadow:none;margin:0;width:auto;min-height:auto}.no-print{display:none}}
+* {
+  box-sizing: border-box;
+  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
+}
+body {
+  margin: 0;
+  background: #cbd5e1;
+  color: #071838;
+  padding: 20px 0;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.page {
+  width: 210mm;
+  height: 297mm;
+  margin: 0 auto 20px;
+  background: #ffffff;
+  position: relative;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+  overflow: hidden;
+  box-sizing: border-box;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.letterhead-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  z-index: 1;
+  pointer-events: none;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.page-content {
+  position: relative;
+  z-index: 10;
+  height: 297mm;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+.content-with-bg {
+  padding: 10mm 15mm 24mm 15mm;
+}
+.content-corporate {
+  padding: 12mm 15mm 14mm 15mm;
+}
+.top-header-row {
+  display: flex;
+  justify-content: flex-start;
+  align-items: flex-start;
+  min-height: 28mm;
+  margin-bottom: 3mm;
+}
+.doc-header-block {
+  width: 44%;
+  text-align: right;
+  padding-top: 2mm;
+}
+.doc-badge {
+  display: inline-block;
+  background: #071838 !important;
+  color: #ffffff !important;
+  padding: 5px 14px;
+  border-radius: 5px;
+  font-size: 13.5px;
+  font-weight: 900;
+  margin-bottom: 5px;
+  border-right: 4px solid #c59b27 !important;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.meta-line {
+  font-size: 11.5px;
+  color: #071838 !important;
+  margin: 2px 0;
+  font-weight: 700;
+}
+.meta-line span {
+  color: #475569 !important;
+  margin-left: 6px;
+}
+.meta-line b {
+  color: #071838 !important;
+  font-family: monospace;
+  font-size: 12px;
+}
+/* Corporate Dynamic Header (When no A4 background image) */
+.corp-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 10px;
+  border-bottom: 2.5px solid #071838;
+  margin-bottom: 4mm;
+  position: relative;
+}
+.corp-gold-bar {
+  height: 3px;
+  background: linear-gradient(90deg, #c59b27, #f59e0b, #c59b27);
+  margin-top: -2.5px;
+  margin-bottom: 4mm;
+  border-radius: 2px;
+}
+.corp-brand-side {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.corp-brand-logo {
+  max-height: 60px;
+  max-width: 130px;
+  object-fit: contain;
+  border-radius: 6px;
+}
+.corp-brand-emblem {
+  width: 50px;
+  height: 50px;
+  border-radius: 10px;
+  background: #071838;
+  border: 2px solid #c59b27;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: #c59b27;
+  box-shadow: 0 3px 8px rgba(7,24,56,0.15);
+}
+.corp-brand-text {
+  text-align: right;
+}
+.corp-brand-name {
+  font-size: 18px;
+  font-weight: 900;
+  color: #071838;
+  line-height: 1.2;
+}
+.corp-brand-activity {
+  font-size: 11px;
+  font-weight: 700;
+  color: #8a642d;
+  margin-top: 2px;
+}
+.corp-brand-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 10.5px;
+  color: #475569;
+  font-weight: 700;
+  margin-top: 3px;
+}
+.corp-brand-meta b {
+  color: #071838;
+  font-family: monospace;
+}
+.corp-meta-side {
+  text-align: left;
+}
+.corp-footer {
+  margin-top: auto;
+  border-top: 2px solid #071838;
+  padding-top: 6px;
+  position: relative;
+}
+.corp-footer-accent {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  width: 120px;
+  height: 2px;
+  background: #c59b27;
+}
+.corp-footer-grid {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10.5px;
+  color: #334155;
+  font-weight: 700;
+}
+.corp-footer-comp {
+  font-weight: 900;
+  color: #071838;
+}
+.corp-footer-contact {
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  color: #475569;
+}
+.corp-footer-note {
+  text-align: center;
+  font-size: 9px;
+  color: #94a3b8;
+  margin-top: 4px;
+  font-weight: 600;
+}
+.sec-title {
+  background: #071838 !important;
+  color: #ffffff !important;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 800;
+  margin: 6px 0 5px;
+  border-right: 4px solid #c59b27 !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.grid3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.cbox {
+  border: 1px solid #cbd5e1 !important;
+  border-top: 2.5px solid #071838 !important;
+  background: #f8fafc !important;
+  border-radius: 4px;
+  padding: 5px 8px;
+  min-height: 42px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.cbox b {
+  display: block;
+  font-size: 10px;
+  color: #8a642d !important;
+  margin-bottom: 2px;
+  font-weight: 800;
+}
+.cbox span {
+  font-size: 12px;
+  font-weight: 800;
+  color: #071838 !important;
+}
+table.q-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 4px;
+  font-size: 11px;
+}
+table.q-table th {
+  background: #071838 !important;
+  color: #ffffff !important;
+  padding: 7px 4px;
+  font-weight: 800;
+  font-size: 11px;
+  border: 1px solid #071838 !important;
+  text-align: center;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+table.q-table td {
+  border: 1px solid #94a3b8 !important;
+  padding: 6px 4px;
+  text-align: center;
+  font-weight: 700;
+  color: #071838 !important;
+  font-size: 11px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.sum-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 6px 0;
+}
+.sum-card {
+  border: 1.5px solid #cbd5e1 !important;
+  border-top: 3px solid #c59b27 !important;
+  background: #f8fafc !important;
+  border-radius: 6px;
+  text-align: center;
+  padding: 6px 4px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.sum-card b {
+  display: block;
+  color: #071838 !important;
+  font-size: 10.5px;
+  font-weight: 800;
+  margin-bottom: 3px;
+}
+.sum-card span {
+  font-size: 14.5px;
+  color: #071838 !important;
+  font-weight: 900;
+}
+.sum-card.grand-card {
+  border-color: #059669 !important;
+  border-top-color: #059669 !important;
+  background: #ecfdf5 !important;
+}
+.sum-card.grand-card span {
+  color: #047857 !important;
+  font-size: 16px;
+}
+.notes-body {
+  border: 1px solid #cbd5e1 !important;
+  background: #f8fafc !important;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: #071838 !important;
+  font-weight: 600;
+  white-space: pre-wrap;
+  margin-bottom: 6px;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.signs-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-top: auto;
+  padding-bottom: 2px;
+}
+.sign-box {
+  border-top: 1.5px dashed #071838 !important;
+  padding-top: 6px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: #071838 !important;
+}
+.no-print {
+  position: fixed;
+  top: 15px;
+  left: 15px;
+  display: flex;
+  gap: 8px;
+  z-index: 9999;
+}
+.no-print button {
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 14px;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+.btn-print { background: #16a34a; }
+.btn-close { background: #475569; }
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 0;
+  }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  .page {
+    box-shadow: none !important;
+    margin: 0 !important;
+    width: 210mm !important;
+    height: 297mm !important;
+    page-break-after: always;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
 </style>
 </head>
 <body>
 <div class="no-print">
-<button class="print" onclick="window.print()">طباعة / حفظ PDF</button>
-<button class="close" onclick="window.close()">إغلاق الصفحة</button>
+  <button class="btn-print" onclick="window.print()">طباعة / حفظ PDF</button>
+  <button class="btn-close" onclick="window.close()">إغلاق الصفحة</button>
 </div>
 <div class="page">
-  <div class="head">
-    <div class="brand">
-      <h1>${companyName}</h1>
-      <p>السجل التجاري: ${crNumber} | الرقم الضريبي: ${taxNumber}</p>
-      <p>العنوان: ${address} | الجوال: ${phone}</p>
+  ${hasLetterheadBg ? `<img class="letterhead-bg" src="${letterheadBgUrl}" alt="كليشة عرض الأسعار" />` : ""}
+  <div class="page-content ${hasLetterheadBg ? "content-with-bg" : "content-corporate"}">
+    ${
+      hasLetterheadBg
+        ? `
+    <div class="top-header-row">
+      <div class="doc-header-block">
+        <div class="doc-badge">وثيقة عرض سعر مالي وتشغيلي</div>
+        <div class="meta-line"><span>الجهة المصدرة:</span> <b style="font-family: inherit; color: #8a642d;">${companyName}</b></div>
+        <div class="meta-line"><span>رقم العرض:</span> <b>${q.no}</b></div>
+        <div class="meta-line"><span>تاريخ الإصدار:</span> <b>${q.date}</b></div>
+        ${crNumber ? `<div class="meta-line"><span>السجل التجاري:</span> <b>${crNumber}</b></div>` : ""}
+        ${taxNumber ? `<div class="meta-line"><span>الرقم الضريبي:</span> <b>${taxNumber}</b></div>` : ""}
+      </div>
+    </div>`
+        : `
+    <div class="corp-header-row">
+      <div class="corp-brand-side">
+        ${
+          customLogo
+            ? `<img src="${customLogo}" alt="${companyName}" class="corp-brand-logo" />`
+            : `<div class="corp-brand-emblem">🏢</div>`
+        }
+        <div class="corp-brand-text">
+          <div class="corp-brand-name">${companyName}</div>
+          ${compActivity ? `<div class="corp-brand-activity">${compActivity}</div>` : ""}
+          <div class="corp-brand-meta">
+            ${crNumber ? `<span>سجل تجاري: <b>${crNumber}</b></span>` : ""}
+            ${taxNumber ? `<span>الرقم الضريبي: <b>${taxNumber}</b></span>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="corp-meta-side">
+        <div class="doc-badge">وثيقة عرض سعر رسمي</div>
+        <div class="meta-line"><span>رقم العرض:</span> <b>${q.no}</b></div>
+        <div class="meta-line"><span>تاريخ الإصدار:</span> <b>${q.date}</b></div>
+      </div>
     </div>
-    <div style="text-align: center;">
-      <div class="logo"></div>
-    </div>
-    <div class="quote-meta">
-      <h2>وثيقة عرض سعر</h2>
-      <p>رقم العرض: <b>${q.no}</b></p>
-      <p>التاريخ: <b>${q.date}</b></p>
-    </div>
-  </div>
-  
-  <div class="title">بيانات عميل عرض السعر</div>
-  <div class="grid">
-    <div class="box"><b>السادة / العميل الكريم</b><span>${q.client}</span></div>
-    <div class="box"><b>رقم الجوال</b><span>${q.phone || "غير مسجل"}</span></div>
-    <div class="box"><b>المشروع والموقع التابع</b><span>${q.project || "غير مسجل"}</span></div>
-  </div>
+    <div class="corp-gold-bar"></div>`
+    }
 
-  <div class="title">بنود وجدول كميات وأسعار العرض المالي والتشغيلي</div>
-  <table>
-    <thead>
-      <tr>
-        <th style="width: 6%">م</th>
-        <th style="text-align: right; padding-right: 15px; width: 38%">البند والبيان الفني للمواد والأعمال</th>
-        <th style="width: 16%">الوحدة</th>
-        <th style="width: 10%">الكمية</th>
-        <th style="width: 15%">سعر الوحدة</th>
-        <th style="width: 15%">الإجمالي الكلي</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${tableRows}
-    </tbody>
-  </table>
-
-  <div class="summary">
-    <div class="sum">
-      <b>إجمالي المبلغ الخاضع للضريبة</b>
-      <span>${Number(q.amount || 0).toLocaleString()} ريال</span>
+    <div class="sec-title">بيانات عميل عرض السعر والمشروع</div>
+    <div class="grid3">
+      <div class="cbox"><b>السادة / العميل الكريم:</b><span>${q.client}</span></div>
+      <div class="cbox"><b>رقم الجوال والتواصل:</b><span>${q.phone || "غير مسجل"}</span></div>
+      <div class="cbox"><b>المشروع والموقع التابع:</b><span>${q.project || "غير مسجل"}</span></div>
     </div>
-    <div class="sum">
-      <b>ضريبة القيمة المضافة (${q.vat || 15}%)</b>
-      <span>${vatAmount.toLocaleString()} ريال</span>
+
+    <div class="sec-title">بنود وجدول كميات وأسعار العرض المالي والتشغيلي</div>
+    <table class="q-table">
+      <thead>
+        <tr>
+          <th style="width: 5%">م</th>
+          <th style="width: 43%; text-align: right; padding-right: 12px;">البند والبيان الفني للمواد والأعمال</th>
+          <th style="width: 14%">الوحدة</th>
+          <th style="width: 10%">الكمية</th>
+          <th style="width: 14%">سعر الوحدة</th>
+          <th style="width: 14%">الإجمالي الكلي</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tableRows}
+      </tbody>
+    </table>
+
+    <div class="sum-grid">
+      <div class="sum-card">
+        <b>المبلغ قبل الضريبة</b>
+        <span>${Number(q.amount || 0).toLocaleString()} ريال</span>
+      </div>
+      <div class="sum-card">
+        <b>ضريبة القيمة المضافة (${q.vat || 15}%)</b>
+        <span>${vatAmount.toLocaleString()} ريال</span>
+      </div>
+      <div class="sum-card grand-card">
+        <b>الإجمالي النهائي الشامل</b>
+        <span>${Number(q.total || 0).toLocaleString()} ريال</span>
+      </div>
     </div>
-    <div class="sum grand-total">
-      <b>الإجمالي الشامل والنهائي</b>
-      <span>${Number(q.total || 0).toLocaleString()} ريال</span>
+
+    ${
+      parsed.notes
+        ? `
+    <div class="sec-title" style="margin-top: 6px;">الشروط والأحكام وملاحظات إضافية</div>
+    <div class="notes-body">${parsed.notes}</div>
+    `
+        : ""
+    }
+
+    <div class="signs-row">
+      <div class="sign-box">
+        <div>الطرف الأول (مقدم عرض السعر)</div>
+        <div style="font-size: 11px; margin-top: 3px; color: #8a642d; font-weight: 800;">${companyName}</div>
+        ${customLogo ? `<div style="margin-top: 4px;"><img src="${customLogo}" style="max-height: 28px; max-width: 80px; opacity: 0.8; object-fit: contain;" /></div>` : ""}
+        <div style="font-size: 10px; margin-top: 8px; color: #666;">التوقيع والختم المعتمد</div>
+      </div>
+      <div class="sign-box">
+        <div>الطرف الثاني (قبول واعتماد العميل)</div>
+        <div style="font-size: 11px; margin-top: 3px; color: #071838; font-weight: 800;">السادة: ${q.client}</div>
+        <div style="font-size: 10px; margin-top: 15px; color: #666;">التوقيع / المفوض بالاعتماد</div>
+      </div>
     </div>
-  </div>
 
-  ${
-    parsed.notes
-      ? `
-  <div class="title">الشروط والأحكام وملاحظات إضافية</div>
-  <div style="font-size: 11.5px; line-height: 1.7; border: 1px solid #d9dee8; padding: 15px; border-radius: 10px; background: #fafbfc; white-space: pre-wrap;">${parsed.notes}</div>
-  `
-      : ""
-  }
-
-  <div class="signs">
-    <div class="sign">الطرف الأول (مقدم عرض السعر)</div>
-    <div class="sign">الطرف الثاني (قبول واعتماد العميل)</div>
-  </div>
-
-  <div class="footer">
-    يعتبر هذا العرض صالحًا لمدة 15 يومًا من تاريخ إصداره، والاعتماد والقبول يعبّر عن البدء الفوري في صياغة العقود التنفيذية.
+    ${
+      !hasLetterheadBg
+        ? `
+    <div class="corp-footer">
+      <div class="corp-footer-accent"></div>
+      <div class="corp-footer-grid">
+        <div class="corp-footer-comp">${companyName}</div>
+        <div class="corp-footer-contact">
+          ${compAddress ? `<span>📍 ${compAddress}</span>` : ""}
+          ${compPhone ? `<span>📞 ${compPhone}</span>` : ""}
+          ${compEmail ? `<span>✉️ ${compEmail}</span>` : ""}
+        </div>
+      </div>
+      <div class="corp-footer-note">عرض أسعار رسمي صادر ومعتمد من المنظومة المالية</div>
+    </div>`
+        : ""
+    }
   </div>
 </div>
 </body>
@@ -4113,6 +5296,597 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
     } catch (e) {
       console.warn("Exception during Popups window.open printing:", e);
     }
+  };
+
+  const handleUploadCompanyLetterhead = (targetCompId: string, file: File) => {
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      showToast("حجم ملف صورة الكليشة يجب ألا يتجاوز 8 ميجابايت", "error");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const dataUrl = e.target?.result as string;
+      if (dataUrl) {
+        localStorage.setItem(`aw_company_letterhead_${targetCompId}`, dataUrl);
+        setCompanies((prev) =>
+          prev.map((c) => (c.id === targetCompId ? { ...c, letterhead_url: dataUrl } : c))
+        );
+        try {
+          await sb.from("companies").update({ letterhead_url: dataUrl } as any).eq("id", targetCompId);
+        } catch {}
+        showToast("تم رفع واعتماد كليشة الشركة بنجاح! سيتم تطبيقها فوراً على كافة الخطابات وعروض الأسعار", "success");
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleUploadCompanyLogo = (targetCompId: string, file: File) => {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      showToast("حجم ملف الشعار يجب ألا يتجاوز 5 ميجابايت", "error");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const dataUrl = e.target?.result as string;
+      if (dataUrl) {
+        localStorage.setItem(`aw_company_logo_${targetCompId}`, dataUrl);
+        setCompanies((prev) =>
+          prev.map((c) => (c.id === targetCompId ? { ...c, logo_url: dataUrl } : c))
+        );
+        try {
+          await sb.from("companies").update({ logo_url: dataUrl } as any).eq("id", targetCompId);
+        } catch {}
+        showToast("تم رفع واعتماد شعار الشركة بنجاح!", "success");
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleResetCompanyLetterhead = async (targetCompId: string) => {
+    localStorage.removeItem(`aw_company_letterhead_${targetCompId}`);
+    setCompanies((prev) =>
+      prev.map((c) => (c.id === targetCompId ? { ...c, letterhead_url: "" } : c))
+    );
+    try {
+      await sb.from("companies").update({ letterhead_url: "" } as any).eq("id", targetCompId);
+    } catch {}
+    showToast("تمت استعادة الكليشة الافتراضية للشركة", "info");
+  };
+
+  const onPrintOfficialLetter = (letter: OfficialLetter) => {
+    try {
+      const w = window.open("", "_blank");
+      if (!w) {
+        showToast("تنبيه: ملقم المتصفح حظر نافذة الطباعة التلقائية!", "info");
+        return;
+      }
+
+      const assocCompanyId = letter.company_id || "arab_world";
+      const comp = companies.find((c) => c.id === assocCompanyId) || companies.find((c) => c.id === "arab_world") || companies[0];
+      const companyName = letter.company_name?.trim() || comp?.name || "شركة عرب وورلد للمقاولات";
+      const crNumber = comp?.commercial_register || comp?.record_no || "";
+      const taxNumber = comp?.tax_no || "";
+      const compPhone = comp?.phone || "0539853287";
+      const compAddress = comp?.address || "المملكة العربية السعودية";
+      const compEmail = comp?.email || "info@arab1000.online";
+      const compActivity = (comp as any)?.activity || (comp as any)?.sub_title || "";
+
+      // Dynamic Letterhead & Logo Resolution per company
+      const customLetterhead = localStorage.getItem(`aw_company_letterhead_${assocCompanyId}`) || (comp as any)?.letterhead_url || "";
+      const customLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || comp?.logo_url || "";
+      const isArabWorld = assocCompanyId === "arab_world" || companyName.includes("عرب وورلد للمقاولات");
+
+      // Full-page background ONLY if custom letterhead uploaded OR it is Arab World Contracting
+      const hasLetterheadBg = Boolean(customLetterhead || (isArabWorld && !customLetterhead));
+      const letterheadBgUrl = customLetterhead || (isArabWorld ? `${window.location.origin}/assets/letterhead_arab_world.png` : "");
+
+      w.document.write(`
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>خطاب رسمي رقم ${letter.no} - ${companyName} - ${letter.subject}</title>
+<style>
+* {
+  box-sizing: border-box;
+  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
+}
+body {
+  margin: 0;
+  background: #cbd5e1;
+  color: #071838;
+  padding: 20px 0;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.page {
+  width: 210mm;
+  height: 297mm;
+  margin: 0 auto 20px;
+  background: #ffffff;
+  position: relative;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+  overflow: hidden;
+  box-sizing: border-box;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.letterhead-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  z-index: 1;
+  pointer-events: none;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.page-content {
+  position: relative;
+  z-index: 10;
+  height: 297mm;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+.content-with-bg {
+  padding: 12mm 18mm 25mm 18mm;
+}
+.content-corporate {
+  padding: 14mm 18mm 16mm 18mm;
+}
+.top-header-row {
+  display: flex;
+  justify-content: flex-start;
+  align-items: flex-start;
+  min-height: 28mm;
+  margin-bottom: 5mm;
+}
+.doc-header-block {
+  width: 44%;
+  text-align: right;
+  padding-top: 2mm;
+}
+.doc-badge {
+  display: inline-block;
+  background: #071838 !important;
+  color: #ffffff !important;
+  padding: 5px 14px;
+  border-radius: 5px;
+  font-size: 13.5px;
+  font-weight: 900;
+  margin-bottom: 5px;
+  border-right: 4px solid #c59b27 !important;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.meta-line {
+  font-size: 11.5px;
+  color: #071838 !important;
+  margin: 2px 0;
+  font-weight: 700;
+}
+.meta-line span {
+  color: #475569 !important;
+  margin-left: 6px;
+}
+.meta-line b {
+  color: #071838 !important;
+  font-family: monospace;
+}
+/* Corporate Dynamic Header (When no A4 background image) */
+.corp-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 12px;
+  border-bottom: 2.5px solid #071838;
+  margin-bottom: 4mm;
+  position: relative;
+}
+.corp-gold-bar {
+  height: 3px;
+  background: linear-gradient(90deg, #c59b27, #f59e0b, #c59b27);
+  margin-top: -2.5px;
+  margin-bottom: 5mm;
+  border-radius: 2px;
+}
+.corp-brand-side {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.corp-brand-logo {
+  max-height: 65px;
+  max-width: 140px;
+  object-fit: contain;
+  border-radius: 6px;
+}
+.corp-brand-emblem {
+  width: 54px;
+  height: 54px;
+  border-radius: 12px;
+  background: #071838;
+  border: 2px solid #c59b27;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  color: #c59b27;
+  box-shadow: 0 4px 10px rgba(7,24,56,0.15);
+}
+.corp-brand-text {
+  text-align: right;
+}
+.corp-brand-name {
+  font-size: 19px;
+  font-weight: 900;
+  color: #071838;
+  line-height: 1.2;
+}
+.corp-brand-activity {
+  font-size: 11px;
+  font-weight: 700;
+  color: #8a642d;
+  margin-top: 2px;
+}
+.corp-brand-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 10.5px;
+  color: #475569;
+  font-weight: 700;
+  margin-top: 3px;
+}
+.corp-brand-meta b {
+  color: #071838;
+  font-family: monospace;
+}
+.corp-meta-side {
+  text-align: left;
+}
+.corp-footer {
+  margin-top: auto;
+  border-top: 2px solid #071838;
+  padding-top: 8px;
+  position: relative;
+}
+.corp-footer-accent {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  width: 120px;
+  height: 2px;
+  background: #c59b27;
+}
+.corp-footer-grid {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10.5px;
+  color: #334155;
+  font-weight: 700;
+}
+.corp-footer-comp {
+  font-weight: 900;
+  color: #071838;
+}
+.corp-footer-contact {
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  color: #475569;
+}
+.corp-footer-note {
+  text-align: center;
+  font-size: 9px;
+  color: #94a3b8;
+  margin-top: 4px;
+  font-weight: 600;
+}
+.letter-recipient {
+  margin: 6mm 0 3mm;
+  font-size: 14px;
+  font-weight: 800;
+  color: #071838;
+}
+.letter-recipient b {
+  color: #8a642d;
+}
+.letter-subject {
+  background: #f8fafc;
+  border-right: 4px solid #c59b27;
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 8px 14px;
+  margin: 3mm 0 5mm;
+  font-size: 13.5px;
+  font-weight: 900;
+  color: #071838;
+}
+.letter-subject b {
+  color: #071838;
+  margin-left: 6px;
+}
+.letter-greeting {
+  font-size: 13px;
+  font-weight: 800;
+  color: #071838;
+  margin-bottom: 4mm;
+}
+.letter-body {
+  font-size: 13px;
+  line-height: 2;
+  color: #1e293b;
+  font-weight: 600;
+  text-align: justify;
+  margin-bottom: 6mm;
+  white-space: pre-wrap;
+  flex: 1;
+}
+.letter-closing {
+  margin: 4mm 0 6mm;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #071838;
+  font-weight: 700;
+  text-align: center;
+}
+.letter-signs {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-top: auto;
+  padding-bottom: 4mm;
+}
+.sign-issuer {
+  text-align: right;
+  font-size: 12px;
+  color: #071838;
+}
+.sign-official {
+  text-align: center;
+  min-width: 55mm;
+  border-top: 1.5px dashed #071838;
+  padding-top: 8px;
+  font-size: 12px;
+  color: #071838;
+}
+.no-print {
+  position: fixed;
+  top: 15px;
+  left: 15px;
+  display: flex;
+  gap: 8px;
+  z-index: 9999;
+}
+.no-print button {
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 14px;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+.btn-print { background: #16a34a; }
+.btn-close { background: #475569; }
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 0;
+  }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  .page {
+    box-shadow: none !important;
+    margin: 0 !important;
+    width: 210mm !important;
+    height: 297mm !important;
+    page-break-after: always;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+</style>
+</head>
+<body>
+<div class="no-print">
+  <button class="btn-print" onclick="window.print()">طباعة / حفظ PDF</button>
+  <button class="btn-close" onclick="window.close()">إغلاق الصفحة</button>
+</div>
+<div class="page">
+  ${hasLetterheadBg ? `<img class="letterhead-bg" src="${letterheadBgUrl}" alt="كليشة الخطابات الرسمية" />` : ""}
+  <div class="page-content ${hasLetterheadBg ? "content-with-bg" : "content-corporate"}">
+    ${
+      hasLetterheadBg
+        ? `
+    <div class="top-header-row">
+      <div class="doc-header-block">
+        <div class="doc-badge">خطاب رسمي معتمد</div>
+        <div class="meta-line"><span style="color: #64748b;">الجهة الطالبة / المصدرة:</span> <b style="color: #8a642d; font-size: 11.5px; font-family: inherit;">${companyName}</b></div>
+        <div class="meta-line"><span>رقم الخطاب:</span> <b>${letter.no}</b></div>
+        <div class="meta-line"><span>تاريخ الإصدار:</span> <b>${letter.date}</b></div>
+        ${crNumber ? `<div class="meta-line"><span>السجل التجاري:</span> <b>${crNumber}</b></div>` : ""}
+        ${taxNumber ? `<div class="meta-line"><span>الرقم الضريبي:</span> <b>${taxNumber}</b></div>` : ""}
+        <div class="meta-line"><span>المرفقات:</span> <b>${letter.attachments || "لا يوجد"}</b></div>
+      </div>
+    </div>`
+        : `
+    <div class="corp-header-row">
+      <div class="corp-brand-side">
+        ${
+          customLogo
+            ? `<img src="${customLogo}" alt="${companyName}" class="corp-brand-logo" />`
+            : `<div class="corp-brand-emblem">🏢</div>`
+        }
+        <div class="corp-brand-text">
+          <div class="corp-brand-name">${companyName}</div>
+          ${compActivity ? `<div class="corp-brand-activity">${compActivity}</div>` : ""}
+          <div class="corp-brand-meta">
+            ${crNumber ? `<span>سجل تجاري: <b>${crNumber}</b></span>` : ""}
+            ${taxNumber ? `<span>الرقم الضريبي: <b>${taxNumber}</b></span>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="corp-meta-side">
+        <div class="doc-badge">خطاب رسمي معتمد</div>
+        <div class="meta-line"><span>رقم الخطاب:</span> <b>${letter.no}</b></div>
+        <div class="meta-line"><span>تاريخ الإصدار:</span> <b>${letter.date}</b></div>
+        <div class="meta-line"><span>المرفقات:</span> <b>${letter.attachments || "لا يوجد"}</b></div>
+      </div>
+    </div>
+    <div class="corp-gold-bar"></div>`
+    }
+
+    <div class="letter-recipient">
+      <b>سعادة / السادة:</b> <span>${letter.recipient}</span> <span style="margin-right: 6px; color: #8a642d;">المحترمين</span>
+    </div>
+
+    <div class="letter-subject">
+      <b>الموضوع:</b> <span>${letter.subject}</span>
+    </div>
+
+    <div class="letter-greeting">
+      السلام عليكم ورحمة الله وبركاته ،،، وبعد:
+    </div>
+
+    <div class="letter-body">${letter.content}</div>
+
+    <div class="letter-closing">
+      شاكرين ومقدرين لكم كريم تعاونكم وحسن تجاوبكم الدائم،،،<br>
+      <b>وتقبلوا فائق التحية والتقدير والامتنان،،،</b>
+    </div>
+
+    <div class="letter-signs">
+      <div class="sign-issuer">
+        <b>الجهة الطالبة والمصدرة للخطاب:</b><br>
+        <span style="font-weight: 800; color: #8a642d; font-size: 13.5px; display: inline-block; margin-top: 3px;">${companyName}</span>
+        ${crNumber ? `<div style="font-size: 10.5px; color: #475569; margin-top: 3px; font-weight: 700;">سجل تجاري: ${crNumber}</div>` : ""}
+        ${taxNumber ? `<div style="font-size: 10px; color: #64748b;">الرقم الضريبي: ${taxNumber}</div>` : ""}
+      </div>
+      <div class="sign-official">
+        <b>${letter.signatory_title || "المدير العام"}</b><br>
+        <span style="display: block; margin-top: 3px; font-weight: 900; font-size: 13px;">${letter.signatory_name || "م/ إدارة الشركة"}</span>
+        ${customLogo ? `<div style="margin-top: 6px;"><img src="${customLogo}" style="max-height: 38px; max-width: 90px; opacity: 0.75; object-fit: contain; filter: grayscale(20%);" /></div>` : ""}
+        <div style="font-size: 10px; color: #666; margin-top: 8px;">الختم والتوقيع الرسمي المعتمد</div>
+      </div>
+    </div>
+
+    ${
+      !hasLetterheadBg
+        ? `
+    <div class="corp-footer">
+      <div class="corp-footer-accent"></div>
+      <div class="corp-footer-grid">
+        <div class="corp-footer-comp">${companyName}</div>
+        <div class="corp-footer-contact">
+          ${compAddress ? `<span>📍 ${compAddress}</span>` : ""}
+          ${compPhone ? `<span>📞 ${compPhone}</span>` : ""}
+          ${compEmail ? `<span>✉️ ${compEmail}</span>` : ""}
+        </div>
+      </div>
+      <div class="corp-footer-note">وثيقة ومراسلة رسمية صادرة ومعتمدة إلكترونياً</div>
+    </div>`
+        : ""
+    }
+  </div>
+</div>
+</body>
+</html>`);
+      w.document.close();
+    } catch (err) {
+      console.warn("Exception during letter printing:", err);
+    }
+  };
+
+  // Official Letters CRUD
+  const saveLetterLogic = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!letterRecipient.trim() || !letterSubject.trim()) {
+      showToast("يرجى إدخال اسم المستلم وموضوع الخطاب", "info");
+      return;
+    }
+
+    const existingLetter = editLetterId ? letters.find((l) => l.id === editLetterId) : null;
+    const letterNo = existingLetter ? existingLetter.no : generateNextNo("AW-LTR", letters, "no");
+
+    const matchedComp = companies.find((c) => c.id === letterCompanyId);
+    const resolvedCompanyName = letterCompanyName.trim() || matchedComp?.name || "شركة عرب وورلد للمقاولات";
+
+    const row: OfficialLetter = {
+      id: editLetterId || `ltr_${Date.now()}`,
+      company_id: letterCompanyId || "arab_world",
+      company_name: resolvedCompanyName,
+      letter_style: letterStyle,
+      no: letterNo,
+      date: letterDate || new Date().toISOString().slice(0, 10),
+      recipient: letterRecipient.trim(),
+      subject: letterSubject.trim(),
+      content: letterContent.trim(),
+      signatory_name: letterSignatoryName.trim() || "م/ إدارة الشركة",
+      signatory_title: letterSignatoryTitle.trim() || "المدير العام",
+      attachments: letterAttachments.trim(),
+      created_at: existingLetter?.created_at || new Date().toISOString(),
+    };
+
+    let updatedList: OfficialLetter[];
+    if (editLetterId) {
+      updatedList = letters.map((l) => (l.id === editLetterId ? row : l));
+    } else {
+      updatedList = [row, ...letters];
+    }
+
+    setLetters(updatedList);
+    localStorage.setItem("aw_official_letters", JSON.stringify(updatedList));
+
+    try {
+      if (editLetterId) {
+        await sb.from("letters").update(row).eq("id", editLetterId);
+      } else {
+        await sb.from("letters").insert(row);
+      }
+    } catch {
+      // safe fallback
+    }
+
+    await logSession(currentUser!, editLetterId ? `تعديل خطاب رسمي رقم: ${row.no}` : `إنشاء خطاب رسمي جديد رقم: ${row.no}`);
+    setEditLetterId(null);
+    setLetterRecipient("");
+    setLetterSubject("");
+    setLetterContent("");
+    setLetterAttachments("");
+    setLetterCompanyName("");
+    showToast(editLetterId ? "تم تعديل الخطاب بنجاح!" : "تم حفظ الخطاب الرسمي بنجاح!");
+  };
+
+  const deleteLetterLogic = async (id: string, reason?: string) => {
+    const target = letters.find((l) => l.id === id);
+    if (!target) return;
+    const updated = letters.filter((l) => l.id !== id);
+    setLetters(updated);
+    localStorage.setItem("aw_official_letters", JSON.stringify(updated));
+    try {
+      await sb.from("letters").delete().eq("id", id);
+    } catch {}
+    await logSession(currentUser!, `حذف خطاب رسمي رقم: ${target.no} الموجه إلى: ${target.recipient}` + (reason ? ` [السبب: ${reason}]` : ""));
+    showToast("تم حذف الخطاب بنجاح!");
   };
 
   // Quotes CRUD
@@ -4401,12 +6175,38 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
     const oldPaymentForInst = editPaymentId ? payments.find(p => p.id === editPaymentId) : null;
     const oldInstIdForPay = oldPaymentForInst?.installment_id;
 
+    let targetInst = paySelectedInstallment;
+    if (!targetInst && payContractQuery) {
+      const cleanQ = payContractQuery.trim();
+      targetInst = getInstallmentsForReceipt().find(x =>
+        (x.no && x.no.trim().toUpperCase() === cleanQ.toUpperCase()) ||
+        (x.client && x.client.trim().toLowerCase() === cleanQ.toLowerCase()) ||
+        `${x.no} | ${x.client} | ${x.identity}` === cleanQ ||
+        (x.no && cleanQ.toUpperCase().includes(x.no.trim().toUpperCase())) ||
+        (x.client && cleanQ.toLowerCase().includes(x.client.trim().toLowerCase()))
+      ) || null;
+    }
+    if (!targetInst && payTo) {
+      const cleanTo = payTo.trim().toLowerCase();
+      const targetCompany = getTargetCompanyId(paymentCompanyId);
+      targetInst = installments.find(x =>
+        x.client &&
+        x.client.trim().toLowerCase() === cleanTo &&
+        (!targetCompany || !x.company_id || x.company_id === targetCompany)
+      ) || null;
+    }
+
     let payRemBefore: number | undefined = undefined;
     let payRemAfter: number | undefined = undefined;
 
-    if (paySelectedInstallment) {
-      payRemBefore = Number(paySelectedInstallment.remaining || 0);
-      payRemAfter = payRemBefore + Number(payAmount);
+    if (targetInst) {
+      const contractTotal = Number(targetInst.amount || 0);
+      payRemBefore = Number(targetInst.remaining !== undefined ? targetInst.remaining : contractTotal);
+      if (payRemBefore > contractTotal) {
+        payRemBefore = contractTotal;
+      }
+      // سند الصرف يخصم من رصيد المستفيد ويقلل المبلغ المتبقي المستحق له
+      payRemAfter = Math.max(0, payRemBefore - Number(payAmount));
     } else if (payWorkerId) {
       const w = workers.find(x => x.id === payWorkerId);
       if (w) {
@@ -4414,12 +6214,6 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
         const currentAdvance = Number(w.advance || 0);
         payRemBefore = Math.max(0, tot - currentAdvance);
         payRemAfter = Math.max(0, payRemBefore - Number(payAmount));
-      }
-    } else if (payContractQuery) {
-      const foundInst = getInstallmentsForReceipt().find(x => payContractQuery.includes(x.no) || x.no === payContractQuery.trim());
-      if (foundInst) {
-        payRemBefore = Number(foundInst.remaining || 0);
-        payRemAfter = payRemBefore + Number(payAmount);
       }
     }
 
@@ -4440,8 +6234,8 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
       notes: payAttachment ? `${notesAppended} [مرفق: ${payAttachment}]` : notesAppended,
       company_id: getTargetCompanyId(paymentCompanyId),
       worker_id: payWorkerId || null,
-      installment_id: paySelectedInstallment ? paySelectedInstallment.id : undefined,
-      contract_no: paySelectedInstallment ? paySelectedInstallment.no : undefined,
+      installment_id: targetInst ? targetInst.id : undefined,
+      contract_no: targetInst ? targetInst.no : undefined,
       remaining_before: payRemBefore,
       remaining_after: payRemAfter,
     };
@@ -4510,10 +6304,10 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
         return;
       }
 
-      if (paySelectedInstallment) {
-        await recalcLinkedContractFromReceipts(paySelectedInstallment.id);
+      if (targetInst) {
+        await recalcLinkedContractFromReceipts(targetInst.id);
       }
-      if (oldInstIdForPay && oldInstIdForPay !== paySelectedInstallment?.id) {
+      if (oldInstIdForPay && oldInstIdForPay !== targetInst?.id) {
         await recalcLinkedContractFromReceipts(oldInstIdForPay);
       }
 
@@ -4525,7 +6319,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
               : `تعديل سند الصرف رقم: ${row.no}`)
           : `تحرير سند صرف صادر مالي رقم: ${row.no}`
       );
-      const targetContractNo = paySelectedInstallment ? paySelectedInstallment.no : (row.contract_no || "");
+      const targetContractNo = targetInst ? targetInst.no : (row.contract_no || "");
       const finalRem = payRemAfter;
 
       setEditPaymentId(null);
@@ -4563,7 +6357,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
     }
     const p = payments.find((x) => x.id === paymentId);
     if (!p) return;
-    const instId = p.installment_id;
+    const instId = p.installment_id || (p.to_name ? installments.find(i => i.client && i.client.trim().toLowerCase() === p.to_name.trim().toLowerCase())?.id : undefined);
 
     setIsLoading(true);
     try {
@@ -5922,6 +7716,7 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
     { key: "installments", label: "التقسيط والعقود", icon: ClipboardList, visible: !isAttendanceOnly && can("installmentsView") },
     { key: "subcontracts", label: "عقود مقاولات الباطن (عرب وورلد)", icon: FileSignature, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("installmentsView")) },
     { key: "quotes", label: "عروض الأسعار", icon: FileText, visible: !isAttendanceOnly && can("quotes") },
+    { key: "letters", label: "الخطابات الرسمية", icon: Mail, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("quotes")) },
     { key: "receipts", label: "سند قبض", icon: Landmark, visible: !isAttendanceOnly && can("receipts") },
     { key: "payments", label: "سند صرف", icon: TrendingUp, visible: !isAttendanceOnly && can("payments") },
     { key: "expenses", label: "المصروفات", icon: TrendingDown, visible: !isAttendanceOnly && can("expenses") },
@@ -6741,6 +8536,595 @@ td{border:1px solid #d8dee9;padding:9px;text-align:center;font-weight:600}
               </div>
             </div>
           )}
+
+          {/* Official Letters Tab Container (كليشة الخطابات الرسمية) */}
+          {activeSection === "letters" && (currentUser?.role === "admin" || can("quotes")) && (() => {
+            const activeLetterCompObj = companies.find((c) => c.id === letterCompanyId) || companies[0];
+            const activeLetterDisplayTitle = letterCompanyName.trim() || activeLetterCompObj?.name || "شركة عرب وورلد للمقاولات";
+            const currentLetterCompId = letterCompanyId || activeLetterCompObj?.id || "arab_world";
+            const currentLetterCustomLetterhead = localStorage.getItem(`aw_company_letterhead_${currentLetterCompId}`) || (activeLetterCompObj as any)?.letterhead_url || "";
+            const currentLetterCustomLogo = localStorage.getItem(`aw_company_logo_${currentLetterCompId}`) || activeLetterCompObj?.logo_url || "";
+            const isLetterArabWorld = currentLetterCompId === "arab_world" || activeLetterDisplayTitle.includes("عرب وورلد للمقاولات");
+
+            return (
+            <div className="space-y-6" id="letters-tab-view">
+              {/* Header Hero Banner with Dynamic Letterhead & Branding Controls */}
+              <div className="bg-gradient-to-r from-slate-900 via-[#071838] to-slate-900 border border-amber-500/30 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+                <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6 relative z-10">
+                  <div className="space-y-2 max-w-2xl">
+                    <div className="inline-flex items-center gap-2 px-3 py-1 bg-amber-500/15 border border-amber-500/30 rounded-full text-amber-300 text-xs font-black">
+                      <span>🏛️</span> كليشة وهوية المراسلات الرسمية (Letterhead & Branding)
+                    </div>
+                    <h2 className="text-xl md:text-2xl font-black text-white">
+                      إدارة الخطابات والمراسلات الرسمية
+                    </h2>
+                    <p className="text-xs text-slate-300 leading-relaxed font-semibold">
+                      تحرير وطباعة الخطابات، التعاميم، والتعميدات مباشرة باسم وبيانات الشركة الطالبة مع دعم تخصيص كليشة A4 مستقلة وشعار خاص لكل شركة من جهازك، أو استخدام الترويسة الرقمية المعتمدة تلقائياً.
+                    </p>
+                  </div>
+
+                  {/* Letterhead Preview & Upload Controls Card */}
+                  <div className="flex flex-col sm:flex-row items-center gap-4 bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-md">
+                    {/* Live Thumbnail Preview */}
+                    <div className="relative group shrink-0">
+                      {currentLetterCustomLetterhead ? (
+                        <img
+                          src={currentLetterCustomLetterhead}
+                          alt="كليشة مخصصة"
+                          className="w-16 h-24 object-cover rounded-lg border-2 border-emerald-500/70 shadow-lg"
+                        />
+                      ) : isLetterArabWorld ? (
+                        <img
+                          src="/assets/letterhead_arab_world.png"
+                          alt="كليشة عرب وورلد"
+                          className="w-16 h-24 object-cover rounded-lg border border-amber-500/40 shadow-lg"
+                        />
+                      ) : currentLetterCustomLogo ? (
+                        <div className="w-16 h-24 bg-white/95 rounded-lg border border-blue-500/40 shadow-lg p-1.5 flex flex-col justify-between items-center text-center">
+                          <img src={currentLetterCustomLogo} alt="شعار الشركة" className="max-h-8 object-contain" />
+                          <div className="text-[7px] font-black text-slate-800 leading-tight line-clamp-2">{activeLetterDisplayTitle}</div>
+                          <div className="w-full h-1 bg-amber-500 rounded-full"></div>
+                        </div>
+                      ) : (
+                        <div className="w-16 h-24 bg-gradient-to-b from-slate-900 to-slate-950 rounded-lg border border-amber-500/30 shadow-lg p-1.5 flex flex-col justify-between items-center text-center">
+                          <span className="text-xl">🏢</span>
+                          <div className="text-[7px] font-black text-amber-300 leading-tight line-clamp-2">{activeLetterDisplayTitle}</div>
+                          <div className="text-[6px] text-slate-400">ترويسة رقمية</div>
+                        </div>
+                      )}
+                      <span className="absolute -bottom-1 -right-1 px-1.5 py-0.5 bg-slate-900/90 text-amber-300 rounded text-[8px] font-mono border border-slate-700">A4</span>
+                    </div>
+
+                    {/* Company Branding Details & Upload Actions */}
+                    <div className="text-right space-y-1.5 min-w-[210px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-black text-amber-400">الشركة المصدرة للخطاب:</span>
+                        <span className={`px-2 py-0.5 rounded text-[9px] font-black ${
+                          currentLetterCustomLetterhead
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                            : isLetterArabWorld
+                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                            : "bg-blue-500/20 text-blue-300 border border-blue-500/30"
+                        }`}>
+                          {currentLetterCustomLetterhead ? "كليشة خاصة مرفوعة" : isLetterArabWorld ? "كليشة عرب وورلد" : "ترويسة رقمية معتمدة"}
+                        </span>
+                      </div>
+                      <div className="text-xs font-black text-white max-w-[220px] truncate">{activeLetterDisplayTitle}</div>
+                      <div className="text-[10px] text-slate-400 font-mono">
+                        {activeLetterCompObj?.phone || "0539853287"} | {activeLetterCompObj?.commercial_register ? `س.ت: ${activeLetterCompObj.commercial_register}` : "المملكة العربية السعودية"}
+                      </div>
+
+                      {/* Quick Upload Buttons */}
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        <label className="cursor-pointer px-2.5 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-black inline-flex items-center gap-1 transition-all shadow-sm">
+                          <span>📄</span> رفع كليشة A4
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) handleUploadCompanyLetterhead(currentLetterCompId, file);
+                            }}
+                          />
+                        </label>
+                        <label className="cursor-pointer px-2.5 py-1 bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 border border-blue-500/40 rounded-lg text-[10px] font-black inline-flex items-center gap-1 transition-all shadow-sm">
+                          <span>🖼️</span> رفع شعار
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) handleUploadCompanyLogo(currentLetterCompId, file);
+                            }}
+                          />
+                        </label>
+                        {currentLetterCustomLetterhead && (
+                          <button
+                            type="button"
+                            onClick={() => handleResetCompanyLetterhead(currentLetterCompId)}
+                            className="px-2 py-1 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 rounded-lg text-[10px] font-bold transition-all"
+                            title="استعادة الكليشة الافتراضية"
+                          >
+                            ✕ استعادة
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Letter Form with Quick Templates */}
+              <form onSubmit={saveLetterLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
+                <div className="border-b border-slate-850 pb-3 flex flex-wrap justify-between items-center gap-2">
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <span>✍️</span> {editLetterId ? `تعديل الخطاب الرسمي (${letters.find(l => l.id === editLetterId)?.no})` : "تحرير خطاب رسمي جديد على الكليشة"}
+                  </h3>
+                  {editLetterId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditLetterId(null);
+                        setLetterRecipient("");
+                        setLetterSubject("");
+                        setLetterContent("");
+                        setLetterAttachments("");
+                        setLetterCompanyName("");
+                      }}
+                      className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold"
+                    >
+                      إلغاء التعديل وإنشاء جديد
+                    </button>
+                  )}
+                </div>
+
+                {/* Quick Templates Buttons */}
+                <div className="space-y-2 bg-slate-950/50 p-4 rounded-2xl border border-slate-800">
+                  <div className="text-xs font-black text-amber-400 flex items-center gap-1.5">
+                    <span>⚡</span> نماذج خطابات جاهزة وسريعة التعبئة (تصدر آلياً باسم: <span className="text-white underline">{activeLetterDisplayTitle}</span>):
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLetterSubject("تعميد وترسية أعمال المقاولات العامة والإنشاءات");
+                        setLetterRecipient("شركة / مؤسسة المقاولات العامة");
+                        setLetterContent(`إشارة إلى المباحثات والاتفاق المبدئي وعرض السعر المقدم من طرفكم لمشروعنا، يسر ${activeLetterDisplayTitle} إحاطتكم رسمياً بتعميدكم لتنفيذ وتوريد الأعمال المتفق عليها وفقاً للمواصفات الفنية المعتمدة.\n\nنأمل من سعادتكم استكمال الإجراءات التنسيقية اللازمة مع المهندس المشرف واستلام الموقع والبدء الميداني الفوري.`);
+                        setLetterAttachments("جدول الكميات والمواصفات المعتمدة");
+                        showToast("تم تطبيق نموذج خطاب التعميد والترسية!");
+                      }}
+                      className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-xl text-xs font-bold transition-all"
+                    >
+                      📜 خطاب تعميد وترسية أعمال
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLetterSubject("مطالبة مالية بسداد مستحقات المستخلص الجاري");
+                        setLetterRecipient("السادة / إدارة المشاريع والمحاسبة");
+                        setLetterContent(`بالإشارة إلى العقد التنفيذي ومجريات الأعمال المنجزة في الموقع، ونظراً لإتمام الأعمال المقررة واعتمادها رسمياً من قبل المشرف الميداني، نرجو من سعادتكم التكرم باتخاذ الإجراءات المالية اللازمة لصرف وتحويل المستحقات المالية المستحقة لحساب ${activeLetterDisplayTitle} البنكي المعتمد.\n\nشاكرين ومقدرين لكم كريم تعاونكم الدائم.`);
+                        setLetterAttachments("مستخلص الأعمال ومحضر الإنجاز الميداني");
+                        showToast("تم تطبيق نموذج خطاب المطالبة المالية!");
+                      }}
+                      className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-xl text-xs font-bold transition-all"
+                    >
+                      💰 خطاب مطالبة مالية وصرف
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLetterSubject("خطاب تفويض وصلاحيات تمثيل رسمي");
+                        setLetterRecipient("إلى من يهمه الأمر / الجهات المختصة");
+                        setLetterContent(`تشهد ${activeLetterDisplayTitle} بأنها قد فوضت المكرم (...)، حامل هوية وطنية / إقامة رقم (...)، بتمثيل الشركة ومراجعة كافة الجهات المعنية واستلام وتسليم الأوراق الرسمية والتوقيع نيابة عن الشركة فيما يخص المشروع، وذلك لمدة (...) من تاريخه.\n\nوقد صدر هذا التفويض لتقديمه للجهات ذات العلاقة.`);
+                        setLetterAttachments("صورة السجل التجاري وصورة الهوية");
+                        showToast("تم تطبيق نموذج خطاب التفويض!");
+                      }}
+                      className="px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-xl text-xs font-bold transition-all"
+                    >
+                      🛡️ خطاب تفويض رسمي
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLetterSubject("شهادة تعريف بالراتب والخدمة الوظيفية");
+                        setLetterRecipient("إلى من يهمه الأمر / الجهة المستفيدة");
+                        setLetterContent(`تشهد ${activeLetterDisplayTitle} بأن الموظف المكرم (...)، حامل هوية رقم (...)، يعمل لدينا بموجب عقد عمل ساري المفعول بمهنة (...)، ويتقاضى راتباً شهرياً إجمالياً قدره (...) ريال سعودي.\n\nوقد أعطيت له هذه الشهادة بناءً على طلبه لتقديمها إلى الجهة المعنية دون أي مسؤولية أو التزام مالي على الشركة.`);
+                        setLetterAttachments("شهادة الاشتراك في التأمينات الاجتماعية");
+                        showToast("تم تطبيق نموذج شهادة التعريف بالراتب!");
+                      }}
+                      className="px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold transition-all"
+                    >
+                      👔 شهادة تعريف بالراتب والخدمة
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLetterSubject("إشعار رسمي ببدء أعمال التنفيذ بالموقع");
+                        setLetterRecipient("السادة / العميل الكريم والجهة المشرفة");
+                        setLetterContent(`يسر ${activeLetterDisplayTitle} إشعار سعادتكم بجاهزية كافة الطواقم الفنية والكوادر الهندسية والآليات لبدء التنفيذ الفعلي في موقع المشروع الموقر اعتباراً من تاريخ (...).\n\nنرجو من سعادتكم التكرم بتسهيل تصاريح الدخول والتنسيق مع ممثلنا بالموقع.`);
+                        setLetterAttachments("قائمة الآليات والكادر الهندسي المشرف");
+                        showToast("تم تطبيق نموذج إشعار بدء التنفيذ!");
+                      }}
+                      className="px-3 py-1.5 bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 rounded-xl text-xs font-bold transition-all"
+                    >
+                      🚜 إشعار ببدء أعمال الموقع
+                    </button>
+                  </div>
+                </div>
+
+                {/* Requesting Company Selection (الشركة الطالبة للخطاب) */}
+                <div className="p-4 bg-slate-950/70 border-2 border-amber-500/30 rounded-2xl space-y-3 shadow-inner">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-amber-400 font-black text-base">🏢</span>
+                      <label className="text-xs font-black text-amber-300">
+                        الشركة الطالبة والمصدرة للخطاب (الجهة التي يُعتمد ويُطبع الخطاب باسمها وبياناتها) *
+                      </label>
+                    </div>
+                    <span className="text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
+                      يتم اعتماد الترويسة والختم الرسمي باسم هذه الشركة
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400">اختر الشركة من القائمة المسجلة</label>
+                      <select
+                        value={letterCompanyId}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setLetterCompanyId(val);
+                          if (val !== "custom") {
+                            const matched = companies.find((c) => c.id === val);
+                            if (matched) setLetterCompanyName(matched.name);
+                          }
+                        }}
+                        className="w-full px-3 py-2.5 bg-slate-900 border border-amber-500/40 rounded-xl text-xs font-black text-white focus:outline-none focus:border-amber-400 font-sans shadow-sm"
+                      >
+                        {getAuthorizedCompanies().map((c) => (
+                          <option key={c.id} value={c.id} className="bg-slate-950 text-white">
+                            🏢 {c.name} {c.commercial_register ? `(س.ت: ${c.commercial_register})` : ""}
+                          </option>
+                        ))}
+                        <option value="custom" className="bg-slate-950 text-amber-400 font-bold">
+                          ✏️ جهة / شركة طالبة مخصصة (إدخال يدوي)...
+                        </option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400">
+                        اسم الشركة الطالبة الرسمي (يظهر في الترويسة وخاتمة الاعتماد) *
+                      </label>
+                      <input
+                        required
+                        placeholder="مثال: شركة عرب وورلد للمقاولات أو اسم الشركة الطالبة..."
+                        value={
+                          letterCompanyName ||
+                          (companies.find((c) => c.id === letterCompanyId)?.name || "")
+                        }
+                        onChange={(e) => setLetterCompanyName(e.target.value)}
+                        className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-black text-amber-300 focus:outline-none focus:border-amber-400 font-sans"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Letterhead Status Banner for Selected Company */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 p-3 rounded-xl border border-slate-800 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="text-amber-400">📋</span>
+                      <span className="text-slate-300 font-bold">نمط وهوية كليشة هذه الشركة:</span>
+                      <span className={`font-black ${
+                        currentLetterCustomLetterhead ? "text-emerald-400" : isLetterArabWorld ? "text-amber-400" : "text-blue-400"
+                      }`}>
+                        {currentLetterCustomLetterhead
+                          ? "تم رفع واعتماد كليشة A4 خاصة بهذه الشركة (تُطبع كاملة بدون كليشة عرب وورلد)"
+                          : isLetterArabWorld
+                          ? "معتمد كليشة شركة عرب وورلد للمقاولات الرسمية"
+                          : "ترويسة وهوية رقمية معتمدة باسم هذه الشركة وبياناتها الرسمية (خالية من كليشة عرب وورلد)"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <label className="cursor-pointer px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-black inline-flex items-center gap-1 transition-all">
+                        <span>📄</span> {currentLetterCustomLetterhead ? "تغيير كليشة A4" : "رفع كليشة A4 من الجهاز"}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleUploadCompanyLetterhead(currentLetterCompId, file);
+                          }}
+                        />
+                      </label>
+                      <label className="cursor-pointer px-2.5 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/40 rounded-lg text-[10px] font-black inline-flex items-center gap-1 transition-all">
+                        <span>🖼️</span> {currentLetterCustomLogo ? "تغيير الشعار" : "رفع الشعار من الجهاز"}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleUploadCompanyLogo(currentLetterCompId, file);
+                          }}
+                        />
+                      </label>
+                      {currentLetterCustomLetterhead && (
+                        <button
+                          type="button"
+                          onClick={() => handleResetCompanyLetterhead(currentLetterCompId)}
+                          className="px-2 py-1 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 rounded-lg text-[10px] font-bold"
+                          title="استعادة الوضع الافتراضي"
+                        >
+                          ✕ استعادة الافتراضي
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400">الموجه إليه الخطاب (سعادة / السادة) *</label>
+                    <input
+                      required
+                      placeholder="مثال: شركة مدارات البناء للتطوير العقاري"
+                      value={letterRecipient}
+                      onChange={(e) => setLetterRecipient(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                  <div className="space-y-1 md:col-span-2">
+                    <label className="text-[10px] font-black text-slate-400">موضوع الخطاب الرسمي *</label>
+                    <input
+                      required
+                      placeholder="مثال: تعميد تنفيذ أعمال البنية التحتية والأسفلت لمشروع برج الأفق"
+                      value={letterSubject}
+                      onChange={(e) => setLetterSubject(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-amber-400 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400">تاريخ الخطاب</label>
+                    <input
+                      type="date"
+                      value={letterDate}
+                      onChange={(e) => setLetterDate(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400">صفة الموقع المعتمد</label>
+                    <input
+                      placeholder="مثال: المدير العام / مدير المشاريع"
+                      value={letterSignatoryTitle}
+                      onChange={(e) => setLetterSignatoryTitle(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400">اسم المعتمد / الموقع</label>
+                    <input
+                      placeholder="مثال: م/ فهد الدوسري"
+                      value={letterSignatoryName}
+                      onChange={(e) => setLetterSignatoryName(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400">المرفقات الإثباتية (إن وجدت)</label>
+                    <input
+                      placeholder="مثال: جدول الكميات، صورة الهوية"
+                      value={letterAttachments}
+                      onChange={(e) => setLetterAttachments(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-black text-slate-400">نص ومحتوى الخطاب الرسمي *</label>
+                    <span className="text-[10px] font-bold text-slate-500">
+                      {letterContent.length} حرف | {letterContent.split('\n').filter(Boolean).length} فقرات
+                    </span>
+                  </div>
+                  <textarea
+                    required
+                    rows={6}
+                    placeholder="اكتب هنا نص الخطاب الرسمي بتفصيل، وسيتم تنسيقه آلياً على الكليشة الرسمية مع تحية البداية وخاتمة الاعتماد..."
+                    value={letterContent}
+                    onChange={(e) => setLetterContent(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-xs font-semibold text-white focus:outline-none focus:border-amber-500 leading-relaxed font-sans"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-4 pt-3 border-t border-slate-800">
+                  <div className="text-xs text-slate-400 flex items-center gap-2">
+                    <span className="text-amber-400 font-bold">📄 المعاينة:</span>
+                    <span>الطباعة تطبق الكليشة الرسمية المعتمدة فورياً على ورق A4</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!letterRecipient.trim() || !letterSubject.trim()) {
+                          showToast("يرجى إدخال اسم المستلم والموضوع للمعاينة", "info");
+                          return;
+                        }
+                        onPrintOfficialLetter({
+                          id: "preview",
+                          no: editLetterId ? (letters.find(l => l.id === editLetterId)?.no || "AW-LTR-PREVIEW") : generateNextNo("AW-LTR", letters, "no"),
+                          date: letterDate || new Date().toISOString().slice(0, 10),
+                          recipient: letterRecipient,
+                          subject: letterSubject,
+                          content: letterContent,
+                          signatory_name: letterSignatoryName,
+                          signatory_title: letterSignatoryTitle,
+                          attachments: letterAttachments,
+                          company_id: letterCompanyId || "arab_world",
+                          company_name: activeLetterDisplayTitle,
+                          letter_style: letterStyle
+                        });
+                      }}
+                      className="px-5 py-2.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all shadow-md"
+                    >
+                      <Printer className="w-4 h-4" /> معاينة وطباعة على الكليشة الرسمية
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black flex items-center gap-1.5 transition-all shadow-lg shadow-emerald-900/30"
+                    >
+                      <span>💾</span> {editLetterId ? "تحديث وحفظ التعديلات" : "حفظ الخطاب الرسمي"}
+                    </button>
+                  </div>
+                </div>
+              </form>
+
+              {/* Letters Data Table & Search */}
+              <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-4">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-black text-white flex items-center gap-2">
+                      <span>📁</span> سجل الخطابات الرسمية الصادرة ({letters.length})
+                    </h3>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                    {getAuthorizedCompanies().length > 1 && (
+                      <select
+                        value={letterCompanyFilter}
+                        onChange={(e) => setLetterCompanyFilter(e.target.value)}
+                        className="px-3 py-1.5 bg-slate-950/70 border border-slate-800 rounded-xl text-xs font-bold text-amber-300 focus:outline-none focus:border-amber-500 font-sans"
+                      >
+                        <option value="all">🏢 كل الشركات المصدرة ({letters.length})</option>
+                        {getAuthorizedCompanies().map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <div className="w-full sm:w-72 relative">
+                      <input
+                        placeholder="بحث بالموضوع، المستلم، الشركة، أو الرقم..."
+                        value={letterSearch}
+                        onChange={(e) => setLetterSearch(e.target.value)}
+                        className="w-full pl-8 pr-3 py-1.5 bg-slate-950/60 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500"
+                      />
+                      <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto rounded-2xl border border-slate-800">
+                  <table className="w-full text-right text-xs">
+                    <thead>
+                      <tr className="bg-slate-950 text-slate-400 font-bold border-b border-slate-850">
+                        <th className="py-3 px-3">رقم الخطاب</th>
+                        <th className="py-3 px-3">الشركة الطالبة / المصدرة</th>
+                        <th className="py-3 px-3">التاريخ</th>
+                        <th className="py-3 px-3">الموجه إليه (المستلم)</th>
+                        <th className="py-3 px-3">موضوع الخطاب</th>
+                        <th className="py-3 px-3">صفة الموقع</th>
+                        <th className="py-3 px-3 text-center">الكليشة والطباعة</th>
+                        <th className="py-3 px-3 text-center">الإجراءات</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {letters
+                        .filter((l) => {
+                          if (letterCompanyFilter !== "all") {
+                            const lComp = l.company_id || "arab_world";
+                            if (lComp !== letterCompanyFilter) return false;
+                          }
+                          if (!letterSearch) return true;
+                          const q = letterSearch.toLowerCase();
+                          return (
+                            l.no.toLowerCase().includes(q) ||
+                            l.recipient.toLowerCase().includes(q) ||
+                            l.subject.toLowerCase().includes(q) ||
+                            (l.company_name && l.company_name.toLowerCase().includes(q))
+                          );
+                        })
+                        .map((l) => (
+                          <tr key={l.id} className="hover:bg-slate-850/40 transition-colors">
+                            <td className="py-3 px-3 font-mono font-black text-amber-400">{l.no}</td>
+                            <td className="py-3 px-3 font-bold text-amber-300">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[11px]">
+                                🏢 {l.company_name || companies.find((c) => c.id === l.company_id)?.name || "شركة عرب وورلد"}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-300">{l.date}</td>
+                            <td className="py-3 px-3 font-bold text-white">{l.recipient}</td>
+                            <td className="py-3 px-3 font-semibold text-slate-200 max-w-xs truncate">{l.subject}</td>
+                            <td className="py-3 px-3 text-slate-400 text-[11px] font-bold">{l.signatory_title || "المدير العام"}</td>
+                            <td className="py-3 px-3 text-center">
+                              <button
+                                onClick={() => onPrintOfficialLetter(l)}
+                                className="px-2.5 py-1 bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-black inline-flex items-center gap-1 transition-all"
+                                title="طباعة على كليشة الشركة الرسمية"
+                              >
+                                <Printer className="w-3.5 h-3.5" /> طباعة الكليشة
+                              </button>
+                            </td>
+                            <td className="py-3 px-3 text-center space-x-2">
+                              <button
+                                onClick={() => {
+                                  setEditLetterId(l.id);
+                                  setLetterRecipient(l.recipient);
+                                  setLetterSubject(l.subject);
+                                  setLetterContent(l.content);
+                                  setLetterDate(l.date);
+                                  setLetterSignatoryName(l.signatory_name || "م/ إدارة الشركة");
+                                  setLetterSignatoryTitle(l.signatory_title || "المدير العام");
+                                  setLetterAttachments(l.attachments || "");
+                                  setLetterCompanyId(l.company_id || "arab_world");
+                                  setLetterCompanyName(l.company_name || "");
+                                  setLetterStyle(l.letter_style || "letterhead");
+                                  window.scrollTo({ top: 300, behavior: "smooth" });
+                                }}
+                                className="p-1 text-blue-400 hover:text-white inline-block"
+                                title="تعديل الخطاب"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  triggerConfirm(
+                                    "حذف الخطاب الرسمي",
+                                    `هل أنت متأكد من حذف الخطاب رقم "${l.no}" الموجه إلى "${l.recipient}"؟`,
+                                    (reason) => deleteLetterLogic(l.id, reason),
+                                    false
+                                  );
+                                }}
+                                className="p-1 text-rose-400 hover:text-rose-500 inline-block"
+                                title="حذف الخطاب"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      {letters.length === 0 && (
+                        <tr>
+                          <td colSpan={8} className="text-center py-8 text-slate-500 font-bold">
+                            لا توجد خطابات رسمية مسجلة حالياً. استخدم النموذج أعلاه لإنشاء أول خطاب رسمي على الكليشة.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            );
+          })()}
 
           {/* Code Receipts dynamic tab integrations */}
           {activeSection === "receipts" && (currentUser?.role === "admin" || can("receipts")) && (
@@ -11493,6 +13877,7 @@ CREATE TABLE extracts (
             (activeSection === "installments" && (currentUser?.role === "admin" || can("installmentsView"))) ||
             (activeSection === "subcontracts" && (currentUser?.role === "admin" || can("installmentsView"))) ||
             (activeSection === "quotes" && (currentUser?.role === "admin" || can("quotes"))) ||
+            (activeSection === "letters" && (currentUser?.role === "admin" || can("quotes") || can("letters"))) ||
             (activeSection === "receipts" && (currentUser?.role === "admin" || can("receipts"))) ||
             (activeSection === "payments" && (currentUser?.role === "admin" || can("payments"))) ||
             (activeSection === "expenses" && (currentUser?.role === "admin" || can("expenses"))) ||

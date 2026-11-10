@@ -10,6 +10,7 @@ export interface UserPerms {
   installmentsEdit: boolean;
   installmentsDelete: boolean;
   quotes: boolean;
+  letters?: boolean;
   receipts: boolean;
   payments: boolean;
   expenses: boolean;
@@ -128,6 +129,7 @@ export interface Installment {
   guarantor?: string;
   status: "منتظم" | "متأخر" | "متعثر" | "مكتمل";
   contract_direction?: "لنا" | "علينا" | "مصروفات عمالة" | string;
+  classification?: string;
   worker_id?: string;
   project_id?: string;
   notes?: string;
@@ -148,6 +150,23 @@ export interface Quote {
   status: "جديد" | "مرسل" | "مقبول" | "مرفوض";
   notes?: string;
   items?: { description: string; unit?: string; quantity: number; price: number; total: number; }[];
+  created_at?: string;
+}
+
+export interface OfficialLetter {
+  id: string;
+  company_id?: string;
+  company_name?: string;
+  letter_style?: "letterhead" | "standard";
+  no: string;
+  date: string;
+  recipient: string;
+  subject: string;
+  content: string;
+  signatory_name?: string;
+  signatory_title?: string;
+  attachments?: string;
+  notes?: string;
   created_at?: string;
 }
 
@@ -292,6 +311,7 @@ export interface Company {
   notes?: string;     // بنود وشروط إضافية للعقود
   promissory_note_template?: string; // صيغة سند الأمر الافتراضية للشركة
   logo_url?: string;  // شعار الشركة كـ URL أو base64
+  letterhead_url?: string; // كليشة الشركة الرسمية كصورة كاملة A4
   treasuries?: string[]; // قائمة الخزائن الخاصة بالشركة
   created_at?: string;
 }
