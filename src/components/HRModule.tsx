@@ -7,10 +7,11 @@ import React, { useState, useEffect } from "react";
 import {
   Users, User, FileText, ClipboardList, Shield, Landmark, TrendingUp, TrendingDown,
   Clock, Search, Plus, Trash2, Edit2, Calendar, Check, X, AlertCircle, Printer, Download,
-  Coins, Briefcase, Building, ChevronLeft, ChevronRight, File, ShieldCheck, HeartPulse, CheckCircle2
+  Coins, Briefcase, Building, ChevronLeft, ChevronRight, File, ShieldCheck, HeartPulse, CheckCircle2,
+  Car, Truck
 } from "lucide-react";
 import { sb } from "../db";
-import { User as AuthUser, Project, Company, CompanyAsset } from "../types";
+import { User as AuthUser, Project, Company, CompanyAsset, Driver } from "../types";
 
 // HR Interfaces
 export interface HrEmployee {
@@ -165,17 +166,33 @@ export const HRModule: React.FC<HRProps> = ({
   onPaymentCreated
 }) => {
   // Navigation tabs inside HR
-  const [activeTab, setActiveTab] = useState<"employees" | "contracts" | "payrolls" | "custody" | "journals" | "deductions" | "ledger" | "reports">("employees");
+  const [activeTab, setActiveTab] = useState<"employees" | "contracts" | "payrolls" | "custody" | "drivers" | "journals" | "deductions" | "ledger" | "reports">("employees");
 
   // State lists
   const [employees, setEmployees] = useState<HrEmployee[]>([]);
   const [contracts, setContracts] = useState<HrContract[]>([]);
   const [custodies, setCustodies] = useState<HrCustody[]>([]);
+  const [drivers, setDrivers] = useState<Driver[]>([]);
   const [journals, setJournals] = useState<HrJournal[]>([]);
   const [deductions, setDeductions] = useState<HrDeduction[]>([]);
   const [payrolls, setPayrolls] = useState<HrPayroll[]>([]);
   const [companyAssets, setCompanyAssets] = useState<CompanyAsset[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
+
+  // Driver modal and form states
+  const [showDriverModal, setShowDriverModal] = useState<boolean>(false);
+  const [editingDriver, setEditingDriver] = useState<Driver | null>(null);
+  const [driverName, setDriverName] = useState("");
+  const [driverIqama, setDriverIqama] = useState("");
+  const [driverPhone, setDriverPhone] = useState("");
+  const [driverNationality, setDriverNationality] = useState("سعودي");
+  const [driverLicenseNo, setDriverLicenseNo] = useState("");
+  const [driverLicenseType, setDriverLicenseType] = useState<Driver["license_type"]>("خصوصي");
+  const [driverLicenseExpiry, setDriverLicenseExpiry] = useState("");
+  const [driverVehicle, setDriverVehicle] = useState("");
+  const [driverPlate, setDriverPlate] = useState("");
+  const [driverStatus, setDriverStatus] = useState<Driver["status"]>("نشط");
+  const [driverNotes, setDriverNotes] = useState("");
 
   // Common filters & Month
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -234,6 +251,10 @@ export const HRModule: React.FC<HRProps> = ({
       // 7. Company Assets
       const assetsRes = await sb.from("company_assets").select("*").eq("company_id", activeCompanyId);
       if (assetsRes.data) setCompanyAssets(assetsRes.data);
+
+      // 8. Drivers & Vehicles (السائقين والمركبات)
+      const drvRes = await sb.from("hr_drivers").select("*").eq("company_id", activeCompanyId);
+      if (drvRes.data) setDrivers(drvRes.data);
     } catch (err) {
       console.error("Error loading HR data", err);
     } finally {
@@ -888,6 +909,110 @@ export const HRModule: React.FC<HRProps> = ({
     }
   };
 
+  // Driver CRUD & Custody linking Handlers
+  const handleOpenAddDriver = () => {
+    setEditingDriver(null);
+    setDriverName("");
+    setDriverIqama("");
+    setDriverPhone("");
+    setDriverNationality("سعودي");
+    setDriverLicenseNo("");
+    setDriverLicenseType("خصوصي");
+    setDriverLicenseExpiry("");
+    setDriverVehicle("");
+    setDriverPlate("");
+    setDriverStatus("نشط");
+    setDriverNotes("");
+    setShowDriverModal(true);
+  };
+
+  const handleOpenEditDriver = (d: Driver) => {
+    setEditingDriver(d);
+    setDriverName(d.name || "");
+    setDriverIqama(d.iqama_no || "");
+    setDriverPhone(d.phone || "");
+    setDriverNationality(d.nationality || "سعودي");
+    setDriverLicenseNo(d.license_no || "");
+    setDriverLicenseType(d.license_type || "خصوصي");
+    setDriverLicenseExpiry(d.license_expiry || "");
+    setDriverVehicle(d.assigned_vehicle || "");
+    setDriverPlate(d.vehicle_plate || "");
+    setDriverStatus(d.status || "نشط");
+    setDriverNotes(d.notes || "");
+    setShowDriverModal(true);
+  };
+
+  const handleSaveDriver = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!driverName.trim()) {
+      return showToast("يرجى إدخال اسم السائق بالكامل", "error");
+    }
+
+    try {
+      const payload: Partial<Driver> = {
+        company_id: activeCompanyId,
+        name: driverName.trim(),
+        iqama_no: driverIqama.trim(),
+        phone: driverPhone.trim(),
+        nationality: driverNationality.trim(),
+        license_no: driverLicenseNo.trim(),
+        license_type: driverLicenseType,
+        license_expiry: driverLicenseExpiry,
+        assigned_vehicle: driverVehicle.trim(),
+        vehicle_plate: driverPlate.trim(),
+        status: driverStatus,
+        notes: driverNotes.trim(),
+      };
+
+      if (editingDriver) {
+        await sb.from("hr_drivers").update(payload).eq("id", editingDriver.id);
+        showToast("✓ تم تحديث بيانات السائق بنجاح", "success");
+      } else {
+        const newId = `drv_${Date.now()}`;
+        await sb.from("hr_drivers").insert({
+          ...payload,
+          id: newId,
+          created_at: new Date().toISOString(),
+        });
+        showToast("✓ تم تسجيل السائق الجديد بنجاح", "success");
+      }
+
+      setShowDriverModal(false);
+      loadAllData();
+    } catch (err: any) {
+      console.error("Driver save error:", err);
+      showToast(err.message || "فشل حفظ بيانات السائق", "error");
+    }
+  };
+
+  const handleDeleteDriver = async (id: string, name: string) => {
+    if (!confirm(`هل أنت متأكد من حذف السائق "${name}"؟`)) return;
+    try {
+      await sb.from("hr_drivers").delete().eq("id", id);
+      showToast("تم حذف السائق بنجاح", "success");
+      loadAllData();
+    } catch (err: any) {
+      showToast(err.message || "فشل حذف السائق", "error");
+    }
+  };
+
+  const handleAssignCustodyToDriver = (d: Driver) => {
+    setCustodyForm({
+      employee_id: d.id,
+      type: "سيارة / مركبة",
+      description: `مركبة: ${d.assigned_vehicle || "سيارة عمل"} - اللوحة: ${d.vehicle_plate || "غير محدد"} (السائق: ${d.name})`,
+      serial_no: d.vehicle_plate || d.license_no || "VIN-" + Date.now().toString().slice(-6),
+      value: 50000,
+      delivery_date: new Date().toISOString().split("T")[0],
+      delivery_condition: "حالة ممتازة ومفحوصة",
+      project_branch: "قسم الحركة والنقل",
+      delivered_by: currentUser?.name || "إدارة النقليات",
+      status: "مستلمة",
+    });
+    setActiveTab("custody");
+    showToast(`تم فتح شاشة العهد لتسليم المركبة للسائق: ${d.name}`, "info");
+  };
+
   const handleDeletePayroll = async (id: string) => {
     if (!confirm("هل أنت تأكد من إلغاء وحذف مسير/سداد هذا الراتب؟")) return;
     try {
@@ -1033,6 +1158,7 @@ export const HRModule: React.FC<HRProps> = ({
           { key: "journals", label: "اليوميات والحضور", icon: Clock, allowed: can("hr_journals_add") },
           { key: "deductions", label: "الخصميات والسلف", icon: TrendingDown, allowed: can("hr_deductions_add") },
           { key: "custody", label: "العهد والأصول", icon: Shield, allowed: can("hr_custody_view") },
+          { key: "drivers", label: "السائقين والمركبات", icon: Car, allowed: can("hr_drivers_view") },
           { key: "ledger", label: "كشف حساب الموظف", icon: Landmark, allowed: can("hr_salaries_view") },
           { key: "reports", label: "التقارير الإحصائية", icon: FileText, allowed: can("hr_reports_print") },
         ].filter(t => t.allowed).map((tab) => {
@@ -1752,6 +1878,220 @@ export const HRModule: React.FC<HRProps> = ({
           </div>
         </div>
       )}
+
+      {/* Tab: Drivers & Vehicles (السائقين والمركبات وحركة النقل) */}
+      {activeTab === "drivers" && (
+        <div className="space-y-6">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-900/60 p-4 rounded-2xl border border-white/10">
+            <div>
+              <div className="flex items-center gap-2">
+                <Car className="w-5 h-5 text-amber-500" />
+                <h3 className="text-md font-black text-slate-100">
+                  إدارة السائقين والمركبات وحركة النقل
+                </h3>
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px] font-black">
+                  {drivers.length} سائق مسجل
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 font-bold mt-1">
+                متابعة بيانات السائقين، رخص القيادة وتواريخ انتهائها، المركبات المسندة، وتسليم العهد الرسمية
+              </p>
+            </div>
+
+            {can("hr_drivers_add") && (
+              <button
+                onClick={handleOpenAddDriver}
+                className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs px-4 py-2.5 rounded-xl flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ تسجيل سائق جديد</span>
+              </button>
+            )}
+          </div>
+
+          {/* Quick Metrics Bar */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-slate-950/60 border border-white/5 p-3.5 rounded-xl">
+              <span className="text-[10px] text-slate-400 font-bold block">إجمالي السائقين</span>
+              <b className="text-base font-black text-white">{drivers.length}</b>
+            </div>
+            <div className="bg-slate-950/60 border border-white/5 p-3.5 rounded-xl">
+              <span className="text-[10px] text-emerald-400 font-bold block">سائقين على رأس العمل</span>
+              <b className="text-base font-black text-emerald-400">
+                {drivers.filter(d => d.status === "نشط").length}
+              </b>
+            </div>
+            <div className="bg-slate-950/60 border border-white/5 p-3.5 rounded-xl">
+              <span className="text-[10px] text-amber-400 font-bold block">مركبات مسندة</span>
+              <b className="text-base font-black text-amber-300">
+                {drivers.filter(d => Boolean(d.assigned_vehicle)).length}
+              </b>
+            </div>
+            <div className="bg-slate-950/60 border border-white/5 p-3.5 rounded-xl">
+              <span className="text-[10px] text-rose-400 font-bold block">رخص قاربت على الانتهاء</span>
+              <b className="text-base font-black text-rose-400">
+                {drivers.filter(d => {
+                  if (!d.license_expiry) return false;
+                  const diffDays = Math.ceil((new Date(d.license_expiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                  return diffDays <= 30;
+                }).length}
+              </b>
+            </div>
+          </div>
+
+          {/* Drivers Table */}
+          <div className="bg-slate-950/40 border border-white/5 rounded-2xl overflow-hidden shadow-xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-right text-xs">
+                <thead>
+                  <tr className="bg-white/5 text-slate-300 font-black border-b border-white/5">
+                    <th className="p-4">اسم السائق</th>
+                    <th className="p-4">رقم الهوية / الإقامة</th>
+                    <th className="p-4">الجوال</th>
+                    <th className="p-4">الجنسية</th>
+                    <th className="p-4">نوع ورقم الرخصة</th>
+                    <th className="p-4">انتهاء الرخصة</th>
+                    <th className="p-4">المركبة المسندة</th>
+                    <th className="p-4">الحالة</th>
+                    <th className="p-4 text-center">الإجراءات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5 text-slate-200">
+                  {drivers
+                    .filter(d => {
+                      if (!searchQuery) return true;
+                      const q = searchQuery.toLowerCase();
+                      return (
+                        d.name.toLowerCase().includes(q) ||
+                        (d.iqama_no || "").includes(q) ||
+                        (d.phone || "").includes(q) ||
+                        (d.vehicle_plate || "").includes(q)
+                      );
+                    })
+                    .map(d => {
+                      // Check license expiration
+                      let isExpired = false;
+                      let isExpiringSoon = false;
+                      if (d.license_expiry) {
+                        const diffDays = Math.ceil((new Date(d.license_expiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                        if (diffDays < 0) isExpired = true;
+                        else if (diffDays <= 30) isExpiringSoon = true;
+                      }
+
+                      return (
+                        <tr key={d.id} className="hover:bg-white/5 transition-colors">
+                          <td className="p-4 font-black text-white">
+                            <div className="flex items-center gap-2">
+                              <div className="w-7 h-7 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center justify-center font-black text-xs">
+                                🚗
+                              </div>
+                              <div>
+                                <span>{d.name}</span>
+                                {d.notes && <span className="block text-[10px] text-slate-400 font-normal">{d.notes}</span>}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="p-4 font-mono text-slate-300 font-bold">{d.iqama_no || "-"}</td>
+                          <td className="p-4 font-mono text-slate-300">{d.phone || "-"}</td>
+                          <td className="p-4 text-slate-300">{d.nationality || "سعودي"}</td>
+                          <td className="p-4">
+                            <span className="font-bold text-amber-300 block">{d.license_type || "خصوصي"}</span>
+                            <span className="font-mono text-[10px] text-slate-400">{d.license_no || "-"}</span>
+                          </td>
+                          <td className="p-4 font-mono">
+                            {d.license_expiry ? (
+                              isExpired ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                                  منتهية ({d.license_expiry})
+                                </span>
+                              ) : isExpiringSoon ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                  تنتهي قريباً ({d.license_expiry})
+                                </span>
+                              ) : (
+                                <span className="text-emerald-400 text-xs font-bold">{d.license_expiry}</span>
+                              )
+                            ) : (
+                              <span className="text-slate-500">-</span>
+                            )}
+                          </td>
+                          <td className="p-4">
+                            {d.assigned_vehicle ? (
+                              <div>
+                                <span className="font-black text-white block">{d.assigned_vehicle}</span>
+                                {d.vehicle_plate && (
+                                  <span className="text-[10px] font-mono font-bold text-amber-400 bg-amber-500/10 px-1.5 py-0.2 rounded border border-amber-500/20">
+                                    {d.vehicle_plate}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-slate-500 text-[11px]">بدون مركبة</span>
+                            )}
+                          </td>
+                          <td className="p-4">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                                d.status === "نشط"
+                                  ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                  : d.status === "إجازة"
+                                  ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                                  : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                              }`}
+                            >
+                              {d.status}
+                            </span>
+                          </td>
+                          <td className="p-4">
+                            <div className="flex items-center justify-center gap-1.5">
+                              {/* Quick Link to Custody */}
+                              <button
+                                onClick={() => handleAssignCustodyToDriver(d)}
+                                className="px-2 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-[10px] font-black border border-amber-500/20 cursor-pointer flex items-center gap-1"
+                                title="تسليم مركبة كعهدة رسمية للسائق"
+                              >
+                                <Shield className="w-3 h-3" />
+                                <span>تسليم عهدة</span>
+                              </button>
+
+                              <button
+                                onClick={() => handleOpenEditDriver(d)}
+                                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-amber-300 cursor-pointer"
+                                title="تعديل بيانات السائق"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+
+                              {can("hr_drivers_delete") && (
+                                <button
+                                  onClick={() => handleDeleteDriver(d.id, d.name)}
+                                  className="p-1.5 rounded-lg bg-white/5 hover:bg-rose-500/20 text-rose-400 cursor-pointer"
+                                  title="حذف السائق"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                  {drivers.length === 0 && (
+                    <tr>
+                      <td colSpan={9} className="p-8 text-center text-slate-500 font-bold">
+                        لا يوجد سائقين مسجلين بالشركة حتى الآن. اضغط على "+ تسجيل سائق جديد" أعلاه.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* Fourth Tab: Daily Journals */}
       {activeTab === "journals" && (
@@ -3776,6 +4116,192 @@ export const HRModule: React.FC<HRProps> = ({
                 className="bg-white/5 border border-white/5 text-slate-300 px-5 py-2.5 rounded-xl text-xs font-black"
               >
                 إلغاء
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Driver Add / Edit Modal */}
+      {showDriverModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <form
+            onSubmit={handleSaveDriver}
+            className="bg-slate-900 border border-white/10 rounded-2xl p-6 max-w-xl w-full max-h-[90vh] overflow-y-auto space-y-4 text-right shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="text-md font-black text-amber-400 flex items-center gap-2">
+                <Car className="w-5 h-5" />
+                <span>{editingDriver ? "تعديل بيانات السائق والمركبة" : "تسجيل سائق جديد بالشركة"}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowDriverModal(false)}
+                className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              {/* Row 1: Name & Iqama */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-bold block">اسم السائق بالكامل *</label>
+                  <input
+                    required
+                    type="text"
+                    value={driverName}
+                    onChange={e => setDriverName(e.target.value)}
+                    placeholder="الاسم الثلاثي أو الرباعي..."
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-white font-bold focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-bold block">رقم الهوية / الإقامة</label>
+                  <input
+                    type="text"
+                    value={driverIqama}
+                    onChange={e => setDriverIqama(e.target.value)}
+                    placeholder="10xxxxxxxx أو 2xxxxxxxx"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Row 2: Phone & Nationality */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-bold block">رقم الجوال للتواصل</label>
+                  <input
+                    type="text"
+                    value={driverPhone}
+                    onChange={e => setDriverPhone(e.target.value)}
+                    placeholder="05xxxxxxxx"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-white font-mono focus:border-amber-500 focus:outline-none text-left"
+                    dir="ltr"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-bold block">الجنسية</label>
+                  <input
+                    type="text"
+                    value={driverNationality}
+                    onChange={e => setDriverNationality(e.target.value)}
+                    placeholder="سعودي، يمني، مصري، هندي..."
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-white focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Row 3: License No, Type, Expiry */}
+              <div className="p-3 bg-slate-950/60 border border-white/5 rounded-xl space-y-3">
+                <span className="text-[11px] font-black text-amber-300 block">بيانات رخصة القيادة والتحقق:</span>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-slate-400 font-bold block">رقم الرخصة</label>
+                    <input
+                      type="text"
+                      value={driverLicenseNo}
+                      onChange={e => setDriverLicenseNo(e.target.value)}
+                      placeholder="رقم الرخصة..."
+                      className="w-full bg-slate-900 border border-white/10 rounded-xl p-2 text-white font-mono focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-slate-400 font-bold block">نوع الرخصة</label>
+                    <select
+                      value={driverLicenseType}
+                      onChange={e => setDriverLicenseType(e.target.value as any)}
+                      className="w-full bg-slate-900 border border-white/10 rounded-xl p-2 text-white font-bold focus:outline-none"
+                    >
+                      <option value="خصوصي">خصوصي</option>
+                      <option value="نقل ثقيل">نقل ثقيل</option>
+                      <option value="نقل عام">نقل عام</option>
+                      <option value="عمومي">عمومي</option>
+                      <option value="معدات ثقيلة">معدات ثقيلة</option>
+                      <option value="دراجة نارية">دراجة نارية</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-slate-400 font-bold block">تاريخ انتهاء الرخصة</label>
+                    <input
+                      type="date"
+                      value={driverLicenseExpiry}
+                      onChange={e => setDriverLicenseExpiry(e.target.value)}
+                      className="w-full bg-slate-900 border border-white/10 rounded-xl p-2 text-white font-mono focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 4: Assigned Vehicle & Plate */}
+              <div className="p-3 bg-slate-950/60 border border-white/5 rounded-xl space-y-3">
+                <span className="text-[11px] font-black text-amber-300 block">المركبة المسندة للسائق (تسليم العهدة):</span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-slate-400 font-bold block">موديل / وصف المركبة</label>
+                    <input
+                      type="text"
+                      value={driverVehicle}
+                      onChange={e => setDriverVehicle(e.target.value)}
+                      placeholder="مثال: تويوتا هايلوكس 2024 غمارتين"
+                      className="w-full bg-slate-900 border border-white/10 rounded-xl p-2 text-white font-bold focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-slate-400 font-bold block">رقم اللوحة</label>
+                    <input
+                      type="text"
+                      value={driverPlate}
+                      onChange={e => setDriverPlate(e.target.value)}
+                      placeholder="مثال: أ ب ج 1234"
+                      className="w-full bg-slate-900 border border-white/10 rounded-xl p-2 text-white font-mono font-bold focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 5: Status & Notes */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-bold block">الحالة الوظيفية</label>
+                  <select
+                    value={driverStatus}
+                    onChange={e => setDriverStatus(e.target.value as any)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl p-2 text-white font-bold focus:outline-none"
+                  >
+                    <option value="نشط">نشط (على رأس العمل)</option>
+                    <option value="إجازة">في إجازة</option>
+                    <option value="موقوف">موقوف عن العمل</option>
+                  </select>
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="text-slate-300 font-bold block">ملاحظات إضافية</label>
+                  <input
+                    type="text"
+                    value={driverNotes}
+                    onChange={e => setDriverNotes(e.target.value)}
+                    placeholder="ملاحظات حول السائق أو المسار المعتاد..."
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl p-2 text-white focus:outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-4 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setShowDriverModal(false)}
+                className="bg-white/5 border border-white/10 text-slate-300 px-5 py-2.5 rounded-xl text-xs font-black cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="submit"
+                className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-amber-500/20 cursor-pointer"
+              >
+                {editingDriver ? "حفظ التعديلات" : "تسجيل وحفظ السائق"}
               </button>
             </div>
           </form>

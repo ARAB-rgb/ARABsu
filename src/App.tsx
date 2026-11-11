@@ -678,6 +678,12 @@ export default function App() {
     company_slug?: string;
     company_manager?: string;
     company_capital?: number;
+    company_domain?: string;
+    company_domain_ext?: string;
+    company_website?: string;
+    company_city?: string;
+    company_record_no?: string;
+    company_tax_no?: string;
   }): Promise<{ success: boolean; message?: string }> => {
     setIsLoading(true);
     try {
@@ -721,6 +727,13 @@ export default function App() {
           name: userData.company_name?.trim() || `شركة ${userData.name.trim()}`,
           manager: userData.company_manager?.trim() || userData.name.trim(),
           phone: userData.phone?.trim() || "",
+          domain: userData.company_domain || `${cleanSlug}.com`,
+          domain_extension: userData.company_domain_ext || ".com",
+          website: userData.company_website || `https://${cleanSlug}.com`,
+          city: userData.company_city || "الرياض",
+          commercial_register: userData.company_record_no || "",
+          tax_no: userData.company_tax_no || "",
+          currency: "ريال سعودي",
           notes: `تأسيس حساب جديد | رأس المال: ${userData.company_capital || 0} ر.س`,
           created_at: new Date().toISOString(),
         };
@@ -1152,6 +1165,19 @@ export default function App() {
   const [cPhone, setCPhone] = useState("");
   const [cAddress, setCAddress] = useState("");
   const [cLogoUrl, setCLogoUrl] = useState("");
+  const [cDomain, setCDomain] = useState("");
+  const [cDomainExt, setCDomainExt] = useState(".com");
+  const [cWebsite, setCWebsite] = useState("");
+  const [cEmail, setCEmail] = useState("");
+  const [cManager, setCManager] = useState("");
+  const [cCity, setCCity] = useState("الرياض");
+  const [cPostalCode, setCPostalCode] = useState("");
+  const [cCurrency, setCCurrency] = useState("ريال سعودي");
+  const [cBankName, setCBankName] = useState("");
+  const [cIban, setCIban] = useState("");
+  const [cStampUrl, setCStampUrl] = useState("");
+  const [cSignatureUrl, setCSignatureUrl] = useState("");
+  const [cLetterheadUrl, setCLetterheadUrl] = useState("");
 
   // Attachments base64 strings
   const [rAttachment, setRAttachment] = useState("");
@@ -1211,6 +1237,17 @@ export default function App() {
   const [uPerms, setUPerms] = useState<Record<string, boolean>>({
     attendance: true,
     dashboard: false,
+    pos: false,
+    pos_cashier: false,
+    pos_inventory: false,
+    pos_purchases: false,
+    pos_suppliers: false,
+    pos_categories: false,
+    pos_barcode: false,
+    pos_products_add: false,
+    pos_products_edit: false,
+    pos_products_delete: false,
+    pos_settings: false,
     installmentsView: false,
     installmentsAdd: false,
     installmentsEdit: false,
@@ -1227,6 +1264,12 @@ export default function App() {
     users: false,
     sessions: false,
     print: false,
+    hr_custody_view: false,
+    hr_custody_add: false,
+    hr_custody_return: false,
+    hr_drivers_view: false,
+    hr_drivers_add: false,
+    hr_drivers_delete: false,
     dashTopCards: false,
     dashCollection: false,
     dashPulse: false,
@@ -2928,7 +2971,10 @@ export default function App() {
 
   useEffect(() => {
     if (currentUser) {
-      if (currentUser.role === "admin") {
+      if (activeSection === "financial_reports" && selectedCompanyId === "all") {
+        const firstComp = currentUser.company_id || (companies[0]?.id || "arab_world");
+        setSelectedCompanyId(firstComp);
+      } else if (currentUser.role === "admin") {
         if (selectedCompanyId !== "all" && !companies.some((c) => c.id === selectedCompanyId)) {
           setSelectedCompanyId("all");
         }
@@ -6711,6 +6757,20 @@ body {
       capital: Number(cCapital || 0),
       phone: cPhone.trim(),
       address: cAddress.trim(),
+      domain: cDomain.trim(),
+      domain_extension: cDomainExt,
+      website: cWebsite.trim() || (cDomain.trim() ? `https://${cDomain.trim()}${cDomainExt}` : ""),
+      email: cEmail.trim() || (cDomain.trim() ? `info@${cDomain.trim()}${cDomainExt}` : ""),
+      manager: cManager.trim(),
+      city: cCity.trim() || "الرياض",
+      postal_code: cPostalCode.trim(),
+      currency: cCurrency || "ريال سعودي",
+      bank_name: cBankName.trim(),
+      iban: cIban.trim(),
+      logo_url: cLogoUrl.trim(),
+      letterhead_url: cLetterheadUrl.trim(),
+      stamp_url: cStampUrl.trim(),
+      signature_url: cSignatureUrl.trim(),
     };
 
     if (!editCompanyId) {
@@ -6720,6 +6780,9 @@ body {
     setIsLoading(true);
     try {
       localStorage.setItem(`aw_company_logo_${targetCompanyId}`, cLogoUrl.trim());
+      if (cLetterheadUrl.trim()) {
+        localStorage.setItem(`aw_company_letterhead_${targetCompanyId}`, cLetterheadUrl.trim());
+      }
 
       const q = editCompanyId
         ? sb.from("companies").update(row).eq("id", editCompanyId)
@@ -6741,6 +6804,19 @@ body {
       setCPhone("");
       setCAddress("");
       setCLogoUrl("");
+      setCDomain("");
+      setCDomainExt(".com");
+      setCWebsite("");
+      setCEmail("");
+      setCManager("");
+      setCCity("الرياض");
+      setCPostalCode("");
+      setCCurrency("ريال سعودي");
+      setCBankName("");
+      setCIban("");
+      setCStampUrl("");
+      setCSignatureUrl("");
+      setCLetterheadUrl("");
       await loadEverything();
       showToast("تم حفظ بطاقة الشركة بنجاح!");
     } catch {
@@ -8111,7 +8187,9 @@ body {
                     }}
                     className="bg-slate-950 border border-slate-700/80 text-amber-200 font-black text-xs rounded-lg px-2 py-1 focus:outline-none focus:border-amber-400 cursor-pointer"
                   >
-                    <option value="all" className="bg-slate-950 text-amber-300 font-bold">✨ كل الشركات ({getAuthorizedCompanies().length})</option>
+                    {activeSection !== "financial_reports" && (
+                      <option value="all" className="bg-slate-950 text-amber-300 font-bold">✨ كل الشركات ({getAuthorizedCompanies().length})</option>
+                    )}
                     {getAuthorizedCompanies().map((c) => (
                       <option key={c.id} value={c.id} className="bg-slate-950 text-slate-100 font-bold">🏢 {c.name}</option>
                     ))}
@@ -11569,7 +11647,7 @@ body {
             />
           )}
 
-          {/* Financial Reports Section */}
+          {/* Financial Reports Section - Strictly Isolated to Active Company */}
           {activeSection === "financial_reports" && (currentUser?.role === "admin" || can("financial_reports")) && (
             <FinancialReports
               receipts={receipts}
@@ -11580,6 +11658,7 @@ body {
               companies={companies}
               extracts={extracts}
               currentUser={currentUser}
+              activeCompanyId={selectedCompanyId !== "all" ? selectedCompanyId : (currentUser?.company_id || companies[0]?.id || "arab_world")}
             />
           )}
 
@@ -11601,91 +11680,244 @@ body {
                   </div>
 
                   <form onSubmit={saveCompanyLogic} className="space-y-4">
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400 font-bold">اسم الشركة بالكامل *</label>
-                      <input
-                        required
-                        type="text"
-                        placeholder="مثال: شركة عرب وورد للمباني"
-                        value={cName}
-                        onChange={(e) => setCName(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-sans"
-                      />
-                    </div>
+                    <div className="space-y-3">
+                      {/* Section 1: Basic Company Info */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-slate-400 font-bold">اسم الشركة بالكامل *</label>
+                        <input
+                          required
+                          type="text"
+                          placeholder="مثال: شركة عرب وورد للتجارة والمقاولات"
+                          value={cName}
+                          onChange={(e) => setCName(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-sans"
+                        />
+                      </div>
 
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400 font-bold">نشاط الشركة / الوصف الفرعي (يظهر بالهيدر)</label>
-                      <input
-                        type="text"
-                        placeholder="مثال: للمقاولات العامة والتقسيط والعقود"
-                        value={cActivity}
-                        onChange={(e) => setCActivity(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-sans"
-                      />
-                    </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">نشاط الشركة الرئيسي</label>
+                          <input
+                            type="text"
+                            placeholder="مقاولات، تقسيط، تموينات..."
+                            value={cActivity}
+                            onChange={(e) => setCActivity(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-sans"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">المدير العام / المسؤول</label>
+                          <input
+                            type="text"
+                            placeholder="اسم المدير المفوض..."
+                            value={cManager}
+                            onChange={(e) => setCManager(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-sans"
+                          />
+                        </div>
+                      </div>
 
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400 font-bold">رقم السجل التجاري</label>
-                      <input
-                        type="text"
-                        placeholder="مثال: 1010XXXXXX"
-                        value={cRegister}
-                        onChange={(e) => setCRegister(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-mono"
-                      />
-                    </div>
+                      {/* Section 2: Domain, Domain Extension & Online Identity (طلب المستخدم) */}
+                      <div className="p-3 bg-slate-950/60 border border-amber-500/20 rounded-2xl space-y-2.5">
+                        <div className="flex items-center gap-1.5 text-amber-400 text-xs font-black">
+                          <span>🌐</span>
+                          <span>النطاق الإلكتروني وامتداد الدومين (Domain & Web):</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="col-span-2 space-y-1">
+                            <label className="text-[9px] text-slate-400 font-bold">اسم الدومين (Domain Name)</label>
+                            <input
+                              type="text"
+                              placeholder="مثال: arab1000"
+                              value={cDomain}
+                              onChange={(e) => {
+                                const val = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "");
+                                setCDomain(val);
+                                if (val) {
+                                  setCWebsite(`https://${val}${cDomainExt}`);
+                                  setCEmail(`info@${val}${cDomainExt}`);
+                                }
+                              }}
+                              className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-white focus:outline-none focus:border-amber-500 dir-ltr text-left"
+                            />
+                          </div>
+                          <div className="col-span-1 space-y-1">
+                            <label className="text-[9px] text-slate-400 font-bold">امتداد الدومين</label>
+                            <select
+                              value={cDomainExt}
+                              onChange={(e) => {
+                                const ext = e.target.value;
+                                setCDomainExt(ext);
+                                if (cDomain) {
+                                  setCWebsite(`https://${cDomain}${ext}`);
+                                  setCEmail(`info@${cDomain}${ext}`);
+                                }
+                              }}
+                              className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-300 focus:outline-none dir-ltr text-left"
+                            >
+                              <option value=".com">.com</option>
+                              <option value=".sa">.sa</option>
+                              <option value=".com.sa">.com.sa</option>
+                              <option value=".net">.net</option>
+                              <option value=".org">.org</option>
+                              <option value=".online">.online</option>
+                              <option value=".store">.store</option>
+                              <option value=".co">.co</option>
+                            </select>
+                          </div>
+                        </div>
 
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400 font-bold">الرقم الضريبي الموحد</label>
-                      <input
-                        type="text"
-                        placeholder="مثال: 3000XXXXXX00003"
-                        value={cTaxNo}
-                        onChange={(e) => setCTaxNo(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-mono"
-                      />
-                    </div>
+                        <div className="grid grid-cols-2 gap-2 pt-1">
+                          <div className="space-y-1">
+                            <label className="text-[9px] text-slate-400 font-bold">الموقع الإلكتروني</label>
+                            <input
+                              type="text"
+                              placeholder="https://..."
+                              value={cWebsite}
+                              onChange={(e) => setCWebsite(e.target.value)}
+                              className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-white focus:outline-none focus:border-amber-500 dir-ltr text-left"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[9px] text-slate-400 font-bold">البريد الإلكتروني الرسمي</label>
+                            <input
+                              type="email"
+                              placeholder="info@domain.com"
+                              value={cEmail}
+                              onChange={(e) => setCEmail(e.target.value)}
+                              className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-white focus:outline-none focus:border-amber-500 dir-ltr text-left"
+                            />
+                          </div>
+                        </div>
+                      </div>
 
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400 font-bold">رأس مال الشركة التأسيسي (ريال)</label>
-                      <input
-                        type="number"
-                        placeholder="العاصمة التأسيسية بالعملة المحلية"
-                        value={cCapital}
-                        onChange={(e) => setCCapital(e.target.value ? Number(e.target.value) : "")}
-                        className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-mono"
-                      />
-                    </div>
+                      {/* Section 3: Commercial Register & Tax Number */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">رقم السجل التجاري</label>
+                          <input
+                            type="text"
+                            placeholder="1010XXXXXX"
+                            value={cRegister}
+                            onChange={(e) => setCRegister(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-mono"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">الرقم الضريبي الموحد</label>
+                          <input
+                            type="text"
+                            placeholder="3000XXXXXX00003"
+                            value={cTaxNo}
+                            onChange={(e) => setCTaxNo(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-mono"
+                          />
+                        </div>
+                      </div>
 
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400 font-bold">هاتف التواصل</label>
-                      <input
-                        type="text"
-                        placeholder="مثال: 05XXXXXXXX"
-                        value={cPhone}
-                        onChange={(e) => setCPhone(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-mono"
-                      />
-                    </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">رأس المال التأسيسي (ريال)</label>
+                          <input
+                            type="number"
+                            placeholder="0"
+                            value={cCapital}
+                            onChange={(e) => setCCapital(e.target.value ? Number(e.target.value) : "")}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-mono"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">هاتف التواصل</label>
+                          <input
+                            type="text"
+                            placeholder="05XXXXXXXX"
+                            value={cPhone}
+                            onChange={(e) => setCPhone(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-mono"
+                          />
+                        </div>
+                      </div>
 
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400 font-bold">العنوان ومقر الشركة</label>
-                      <textarea
-                        placeholder="المدينة والحي والشارع ومقر الإدارة..."
-                        value={cAddress}
-                        onChange={(e) => setCAddress(e.target.value)}
-                        className="w-full px-3 py-2 h-16 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-sans"
-                      />
-                    </div>
+                      {/* Section 4: Location & Address */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">المدينة والمقر</label>
+                          <input
+                            type="text"
+                            placeholder="الرياض، جدة..."
+                            value={cCity}
+                            onChange={(e) => setCCity(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">الرمز البريدي</label>
+                          <input
+                            type="text"
+                            placeholder="12345"
+                            value={cPostalCode}
+                            onChange={(e) => setCPostalCode(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-mono text-white focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      </div>
 
-                    <div className="space-y-1">
-                      <ImageUploader
-                        id="company-logo-uploader"
-                        label="شعار الشركة المرفوع"
-                        placeholder="قم بسحب وإفلات الشعار هنا، أو انقر للاختيار"
-                        value={cLogoUrl}
-                        onChange={(val) => setCLogoUrl(val)}
-                      />
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-slate-400 font-bold">العنوان التفصيلي ومقر الإدارة</label>
+                        <textarea
+                          placeholder="المدينة والحي والشارع ومقر الإدارة..."
+                          value={cAddress}
+                          onChange={(e) => setCAddress(e.target.value)}
+                          className="w-full px-3 py-2 h-14 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500 font-sans"
+                        />
+                      </div>
+
+                      {/* Section 5: Banking Information */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">البنك المعتمد</label>
+                          <input
+                            type="text"
+                            placeholder="مثال: مصرف الراجحي"
+                            value={cBankName}
+                            onChange={(e) => setCBankName(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 font-bold">رقم الآيبان (IBAN)</label>
+                          <input
+                            type="text"
+                            placeholder="SA0000000000000000000000"
+                            value={cIban}
+                            onChange={(e) => setCIban(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950/40 border border-slate-800 rounded-xl text-xs font-mono font-bold text-white focus:outline-none focus:border-amber-500 dir-ltr text-left"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Section 6: Official Branding, Logo, Stamp & Letterhead */}
+                      <div className="space-y-2 pt-2 border-t border-slate-800">
+                        <div className="space-y-1">
+                          <ImageUploader
+                            id="company-logo-uploader"
+                            label="شعار الشركة المعتمد"
+                            placeholder="قم بسحب وإفلات الشعار هنا، أو انقر للاختيار"
+                            value={cLogoUrl}
+                            onChange={(val) => setCLogoUrl(val)}
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <ImageUploader
+                            id="company-letterhead-uploader"
+                            label="الكليشة والترويسة الرسمية المعتمدة (A4)"
+                            placeholder="ارفع صورة الكليشة الكاملة A4 لاستخدامها بالخطابات وعروض الأسعار"
+                            value={cLetterheadUrl}
+                            onChange={(val) => setCLetterheadUrl(val)}
+                          />
+                        </div>
+                      </div>
                     </div>
 
                     <div className="flex gap-2 justify-end pt-2">
@@ -11701,6 +11933,16 @@ body {
                             setCPhone("");
                             setCAddress("");
                             setCLogoUrl("");
+                            setCDomain("");
+                            setCDomainExt(".com");
+                            setCWebsite("");
+                            setCEmail("");
+                            setCManager("");
+                            setCCity("الرياض");
+                            setCPostalCode("");
+                            setCBankName("");
+                            setCIban("");
+                            setCLetterheadUrl("");
                           }}
                           className="px-4 py-2 bg-slate-800 hover:bg-slate-755 text-slate-300 rounded-xl text-xs font-black transition-colors"
                         >
@@ -11709,9 +11951,9 @@ body {
                       )}
                       <button
                         type="submit"
-                        className="flex-1 py-2 bg-gradient-to-l from-amber-500 to-yellow-500 hover:from-amber-400 text-slate-950 rounded-xl text-xs font-black shadow-lg shadow-amber-500/15"
+                        className="flex-1 py-2.5 bg-gradient-to-l from-amber-500 to-yellow-500 hover:from-amber-400 text-slate-950 rounded-xl text-xs font-black shadow-lg shadow-amber-500/15 cursor-pointer"
                       >
-                        {editCompanyId ? "حفظ التعديلات 💾" : "اعتماد وتسجيل الشركة ✨"}
+                        {editCompanyId ? "حفظ تعديلات الشركة 💾" : "اعتماد وتسجيل الشركة الجديدة ✨"}
                       </button>
                     </div>
                   </form>
@@ -11791,12 +12033,25 @@ body {
                                         setEditCompanyId(comp.id);
                                         setCName(comp.name || "");
                                         setCActivity(comp.activity || (comp as any).sub_title || (comp as any).company_activity || "");
-                                        setCRegister(comp.commercial_register || "");
+                                        setCRegister(comp.commercial_register || comp.record_no || "");
                                         setCTaxNo(comp.tax_no || "");
                                         setCCapital(comp.capital || "");
                                         setCPhone(comp.phone || "");
                                         setCAddress(comp.address || "");
-                                        setCLogoUrl(localStorage.getItem(`aw_company_logo_${comp.id}`) || "");
+                                        setCLogoUrl(comp.logo_url || localStorage.getItem(`aw_company_logo_${comp.id}`) || "");
+                                        setCDomain((comp as any).domain || "");
+                                        setCDomainExt((comp as any).domain_extension || ".com");
+                                        setCWebsite((comp as any).website || "");
+                                        setCEmail((comp as any).email || "");
+                                        setCManager(comp.manager || "");
+                                        setCCity((comp as any).city || "الرياض");
+                                        setCPostalCode((comp as any).postal_code || "");
+                                        setCCurrency((comp as any).currency || "ريال سعودي");
+                                        setCBankName((comp as any).bank_name || "");
+                                        setCIban((comp as any).iban || "");
+                                        setCStampUrl((comp as any).stamp_url || "");
+                                        setCSignatureUrl((comp as any).signature_url || "");
+                                        setCLetterheadUrl(comp.letterhead_url || localStorage.getItem(`aw_company_letterhead_${comp.id}`) || "");
                                       }}
                                       className="p-1 px-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 rounded-lg text-[10px] font-bold transition-all"
                                     >
@@ -13150,7 +13405,23 @@ CREATE TABLE extracts (
                             <span>
                               {k === "attendance" && "📍 بصمة الحضور والانصراف (GPS)"}
                               {k === "dashboard" && "📊 الرئيسية (لوحة التحكم العامة)"}
-                              {k === "pos" && "🛒 الكاشير ونقاط البيع (POS)"}
+                              {k === "pos" && "🛒 الكاشير ونقاط البيع (الوصول العام)"}
+                              {k === "pos_cashier" && "💳 شاشة الكاشير والبيع السريع"}
+                              {k === "pos_inventory" && "📦 إدارة المخزون وتعديل الأرصدة"}
+                              {k === "pos_purchases" && "🚚 فواتير الشراء وتوريد المخزن"}
+                              {k === "pos_suppliers" && "🏭 إدارة الموردين وحساباتهم"}
+                              {k === "pos_categories" && "🏷️ إدارة التصنيفات والأنشطة"}
+                              {k === "pos_barcode" && "🖨️ توليد وطباعة ملصقات الباركود"}
+                              {k === "pos_products_add" && "➕ إضافة منتجات وأصناف جديدة"}
+                              {k === "pos_products_edit" && "✏️ تعديل بيانات المنتجات والأسعار"}
+                              {k === "pos_products_delete" && "❌ إزالة وحذف المنتجات"}
+                              {k === "pos_settings" && "⚙️ تخصيص خانات الكاشير (المدير)"}
+                              {k === "hr_custody_view" && "🛡️ استعراض العهد وممتلكات الشركة"}
+                              {k === "hr_custody_add" && "➕ تسليم عهدة جديدة لموظف"}
+                              {k === "hr_custody_return" && "↩️ استرجاع واعتماد استلام العهد"}
+                              {k === "hr_drivers_view" && "🚚 استعراض السائقين والمركبات"}
+                              {k === "hr_drivers_add" && "➕ تسجيل وتعديل بيانات السائقين"}
+                              {k === "hr_drivers_delete" && "❌ حذف واستبعاد السائقين"}
                               {k === "financial_reports" && "📈 التقارير والقوائم المالية"}
                               {k === "installmentsView" && "👁️ التقسيط والعقود"}
                               {k === "installmentsAdd" && "➕ إضافة عقد يومي"}

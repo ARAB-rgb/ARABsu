@@ -16,8 +16,44 @@ import { QRCodeSVG } from "qrcode.react";
 import { sb, generateNextNo } from "../db";
 import {
   User as AuthUser, Company, Installment, Product, Supplier,
-  PurchaseInvoice, PurchaseItem, PosSale, PosSaleItem, PosCategory, PosCompanyConfig
+  PurchaseInvoice, PurchaseItem, PosSale, PosSaleItem, PosCategory, PosCompanyConfig, UserPerms
 } from "../types";
+
+// SVG Barcode Renderer for standard labels
+export function SimpleBarcodeSvg({ value, height = 36 }: { value: string; height?: number }) {
+  const bars: { width: number; isBlack: boolean }[] = [];
+  bars.push({ width: 2, isBlack: true });
+  bars.push({ width: 2, isBlack: false });
+  bars.push({ width: 2, isBlack: true });
+  
+  for (let i = 0; i < (value || "").length; i++) {
+    const charCode = value.charCodeAt(i);
+    const b1 = (charCode % 3) + 1;
+    const b2 = ((charCode >> 1) % 2) + 1;
+    const b3 = ((charCode >> 2) % 3) + 1;
+    const b4 = ((charCode >> 3) % 2) + 1;
+    bars.push({ width: b1, isBlack: true });
+    bars.push({ width: b2, isBlack: false });
+    bars.push({ width: b3, isBlack: true });
+    bars.push({ width: b4, isBlack: false });
+  }
+  bars.push({ width: 2, isBlack: true });
+  bars.push({ width: 2, isBlack: false });
+  bars.push({ width: 2, isBlack: true });
+
+  const totalWidth = bars.reduce((acc, b) => acc + b.width, 0);
+  let currentX = 0;
+  return (
+    <svg viewBox={`0 0 ${totalWidth} ${height}`} className="w-full max-w-[170px] h-8 mx-auto" preserveAspectRatio="none">
+      {bars.map((bar, idx) => {
+        const x = currentX;
+        currentX += bar.width;
+        if (!bar.isBlack) return null;
+        return <rect key={idx} x={x} y="0" width={bar.width} height={height} fill="#000000" />;
+      })}
+    </svg>
+  );
+}
 
 interface PosCashierModuleProps {
   currentUser: AuthUser | null;
@@ -144,7 +180,7 @@ export function PosCashierModule({
   onRefreshEverything,
 }: PosCashierModuleProps) {
   // Navigation sub-tabs
-  type TabKey = "pos" | "products" | "suppliers" | "purchases" | "sales_history" | "categories" | "settings";
+  type TabKey = "pos" | "products" | "suppliers" | "purchases" | "sales_history" | "categories" | "barcodes" | "settings";
   const [activeTab, setActiveTab] = useState<TabKey>("pos");
 
   // Admin / Manager check
@@ -152,6 +188,13 @@ export function PosCashierModule({
     currentUser?.role === "admin" ||
     currentUser?.role === "supervisor" ||
     !!(currentUser?.perms && (currentUser.perms as any).users);
+
+  // Fine-grained POS Permissions check
+  const can = (permKey: keyof UserPerms): boolean => {
+    if (currentUser?.role === "admin" || currentUser?.role === "supervisor") return true;
+    if (!currentUser?.perms) return false;
+    return Boolean((currentUser.perms as any)[permKey]);
+  };
 
   // Real Database Data State (NO mock data)
   const [products, setProducts] = useState<Product[]>([]);
@@ -161,6 +204,16 @@ export function PosCashierModule({
   const [categories, setCategories] = useState<PosCategory[]>([]);
   const [posConfigs, setPosConfigs] = useState<PosCompanyConfig[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Barcode generator & printing states
+  const [barcodeCategory, setBarcodeCategory] = useState<string>("all");
+  const [barcodeSelectedProductIds, setBarcodeSelectedProductIds] = useState<string[]>([]);
+  const [barcodeCopies, setBarcodeCopies] = useState<number>(4);
+  const [barcodeShowPrice, setBarcodeShowPrice] = useState<boolean>(true);
+  const [barcodeShowName, setBarcodeShowName] = useState<boolean>(true);
+  const [barcodeShowCompany, setBarcodeShowCompany] = useState<boolean>(true);
+  const [barcodeShowCode, setBarcodeShowCode] = useState<boolean>(true);
+  const [barcodeFormat, setBarcodeFormat] = useState<"sheet_24" | "sheet_40" | "thermal_single">("sheet_24");
 
   // Active Company Information
   const activeCompany = companies.find(c => c.id === selectedCompanyId) || companies[0] || {
@@ -1115,87 +1168,113 @@ export function PosCashierModule({
           </div>
         </div>
 
-        {/* Navigation Tabs */}
+        {/* Navigation Tabs with Granular Role & Permission Control */}
         <div className="flex items-center gap-2 overflow-x-auto pt-3 text-xs font-bold scrollbar-none">
-          <button
-            onClick={() => setActiveTab("pos")}
-            className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
-              activeTab === "pos"
-                ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
-                : "text-slate-400 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <ShoppingCart className="w-4 h-4" />
-            <span>🛒 شاشة الكاشير السريعة</span>
-            {cart.length > 0 && (
-              <span className="px-1.5 py-0.5 rounded-full bg-slate-950 text-amber-300 text-[10px] font-black">
-                {cart.length}
-              </span>
-            )}
-          </button>
+          {can("pos_cashier") && (
+            <button
+              onClick={() => setActiveTab("pos")}
+              className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "pos"
+                  ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <ShoppingCart className="w-4 h-4" />
+              <span>🛒 شاشة الكاشير السريعة</span>
+              {cart.length > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-slate-950 text-amber-300 text-[10px] font-black">
+                  {cart.length}
+                </span>
+              )}
+            </button>
+          )}
 
-          <button
-            onClick={() => setActiveTab("categories")}
-            className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
-              activeTab === "categories"
-                ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
-                : "text-slate-400 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <Layers className="w-4 h-4" />
-            <span>🏷️ التصنيفات والأنشطة ({categories.length})</span>
-          </button>
+          {can("pos_categories") && (
+            <button
+              onClick={() => setActiveTab("categories")}
+              className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "categories"
+                  ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <Layers className="w-4 h-4" />
+              <span>🏷️ التصنيفات والأنشطة ({categories.length})</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => setActiveTab("products")}
-            className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
-              activeTab === "products"
-                ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
-                : "text-slate-400 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <Package className="w-4 h-4" />
-            <span>📦 المنتجات والمخزون ({products.length})</span>
-          </button>
+          {can("pos_inventory") && (
+            <button
+              onClick={() => setActiveTab("products")}
+              className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "products"
+                  ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <Package className="w-4 h-4" />
+              <span>📦 المنتجات والمخزون ({products.length})</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => setActiveTab("suppliers")}
-            className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
-              activeTab === "suppliers"
-                ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
-                : "text-slate-400 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <Truck className="w-4 h-4" />
-            <span>🏭 الموردين وحساباتهم ({suppliers.length})</span>
-          </button>
+          {can("pos_barcode") && (
+            <button
+              onClick={() => setActiveTab("barcodes")}
+              className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "barcodes"
+                  ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <Barcode className="w-4 h-4" />
+              <span>🖨️ طباعة الباركود والملصقات</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => setActiveTab("purchases")}
-            className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
-              activeTab === "purchases"
-                ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
-                : "text-slate-400 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <ReceiptText className="w-4 h-4" />
-            <span>🚚 فواتير الشراء والتوريد ({purchases.length})</span>
-          </button>
+          {can("pos_suppliers") && (
+            <button
+              onClick={() => setActiveTab("suppliers")}
+              className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "suppliers"
+                  ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <Truck className="w-4 h-4" />
+              <span>🏭 الموردين وحساباتهم ({suppliers.length})</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => setActiveTab("sales_history")}
-            className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
-              activeTab === "sales_history"
-                ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
-                : "text-slate-400 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <Clock className="w-4 h-4" />
-            <span>🧾 سجل المبيعات والوردية ({posSales.length})</span>
-          </button>
+          {can("pos_purchases") && (
+            <button
+              onClick={() => setActiveTab("purchases")}
+              className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "purchases"
+                  ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <ReceiptText className="w-4 h-4" />
+              <span>🚚 فواتير الشراء والتوريد ({purchases.length})</span>
+            </button>
+          )}
 
-          {/* Admin / Manager Exclusive Settings Tab */}
-          {isAdminOrManager && (
+          {(can("pos_cashier") || can("pos_inventory")) && (
+            <button
+              onClick={() => setActiveTab("sales_history")}
+              className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "sales_history"
+                  ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/25 font-black"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <Clock className="w-4 h-4" />
+              <span>🧾 سجل المبيعات والوردية ({posSales.length})</span>
+            </button>
+          )}
+
+          {/* Admin / Manager / Authorized Settings Tab */}
+          {(isAdminOrManager || can("pos_settings")) && (
             <button
               onClick={() => setActiveTab("settings")}
               className={`px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap mr-auto ${
@@ -1802,6 +1881,18 @@ export function PosCashierModule({
                       📦 {count} منتجات مرتبطة
                     </span>
                     <div className="flex items-center gap-1">
+                      {can("pos_barcode") && (
+                        <button
+                          onClick={() => {
+                            setBarcodeCategory(cat.name);
+                            setActiveTab("barcodes");
+                          }}
+                          className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-cyan-400 cursor-pointer"
+                          title="طباعة باركودات جميع منتجات هذا التصنيف"
+                        >
+                          <Barcode className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <button
                         onClick={() => handleOpenEditCategory(cat)}
                         className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-amber-300 cursor-pointer"
@@ -2114,13 +2205,29 @@ export function PosCashierModule({
                 سجل الأصناف الحقيقية مع تتبع الكميات، التكلفة، أسعار البيع، وهامش الربح
               </p>
             </div>
-            <button
-              onClick={handleOpenAddProduct}
-              className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black rounded-xl flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-500/10 w-full sm:w-auto justify-center"
-            >
-              <Plus className="w-4 h-4" />
-              <span>إضافة منتج حقيقي جديد</span>
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              {can("pos_barcode") && (
+                <button
+                  onClick={() => {
+                    setBarcodeCategory("all");
+                    setActiveTab("barcodes");
+                  }}
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/20 text-xs font-black rounded-xl flex items-center gap-2 cursor-pointer shadow-md"
+                >
+                  <Barcode className="w-4 h-4" />
+                  <span>طباعة ملصقات الباركود</span>
+                </button>
+              )}
+              {can("pos_products_add") && (
+                <button
+                  onClick={handleOpenAddProduct}
+                  className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black rounded-xl flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-500/10 w-full sm:w-auto justify-center"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>إضافة منتج حقيقي جديد</span>
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Products Table */}
@@ -2197,20 +2304,36 @@ export function PosCashierModule({
                           </td>
                           <td className="p-3.5">
                             <div className="flex items-center justify-center gap-1.5">
-                              <button
-                                onClick={() => handleOpenEditProduct(prod)}
-                                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-amber-300 cursor-pointer"
-                                title="تعديل المنتج"
-                              >
-                                <Edit2 className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteProduct(prod.id, prod.name)}
-                                className="p-1.5 rounded-lg bg-white/5 hover:bg-rose-500/20 text-rose-400 cursor-pointer"
-                                title="حذف المنتج"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              {can("pos_barcode") && (
+                                <button
+                                  onClick={() => {
+                                    setBarcodeSelectedProductIds([prod.id]);
+                                    setActiveTab("barcodes");
+                                  }}
+                                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-cyan-400 cursor-pointer"
+                                  title="طباعة ملصق باركود لهذا المنتج"
+                                >
+                                  <Barcode className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {can("pos_products_edit") && (
+                                <button
+                                  onClick={() => handleOpenEditProduct(prod)}
+                                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-amber-300 cursor-pointer"
+                                  title="تعديل المنتج"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {can("pos_products_delete") && (
+                                <button
+                                  onClick={() => handleDeleteProduct(prod.id, prod.name)}
+                                  className="p-1.5 rounded-lg bg-white/5 hover:bg-rose-500/20 text-rose-400 cursor-pointer"
+                                  title="حذف المنتج"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -2481,6 +2604,270 @@ export function PosCashierModule({
           </div>
         </div>
       )}
+
+      {/* ========================================================= */}
+      {/* 5. BARCODES GENERATOR & PRINTING TAB (طباعة الباركود والملصقات) */}
+      {/* ========================================================= */}
+      {activeTab === "barcodes" && can("pos_barcode") && (
+        <div className="space-y-5">
+          {/* Top Bar */}
+          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 bg-slate-900/60 p-4 rounded-2xl border border-white/10">
+            <div>
+              <div className="flex items-center gap-2">
+                <Barcode className="w-5 h-5 text-amber-400" />
+                <h3 className="text-sm font-black text-white">
+                  توليد وطباعة ملصقات الباركود للمنتجات والتصنيفات
+                </h3>
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px] font-black">
+                  طباعة حرارية وورق ملصقات A4
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 font-bold mt-1">
+                اختر التصنيف المطلوب لتوليد باركودات لجميع أصنافه دفعة واحدة، أو حدد منتجات معينة مع التحكم في عدد النسخ وتفاصيل الملصق
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 self-stretch lg:self-auto justify-end">
+              <button
+                onClick={() => window.print()}
+                className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black rounded-xl flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-500/20"
+              >
+                <Printer className="w-4 h-4" />
+                <span>🖨️ طباعة الملصقات المحددة الآن</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Configuration Panel */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-slate-900/80 p-4 rounded-2xl border border-white/10 text-xs font-bold">
+            {/* Category Filter */}
+            <div className="space-y-1.5">
+              <label className="text-slate-300">تصفية بالتصنيف / النشاط:</label>
+              <select
+                value={barcodeCategory}
+                onChange={e => {
+                  const cat = e.target.value;
+                  setBarcodeCategory(cat);
+                  if (cat === "all") {
+                    setBarcodeSelectedProductIds(products.map(p => p.id));
+                  } else {
+                    setBarcodeSelectedProductIds(products.filter(p => p.category === cat).map(p => p.id));
+                  }
+                }}
+                className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-amber-300 font-black focus:outline-none"
+              >
+                <option value="all">📦 جميع التصنيفات والأصناف ({products.length} منتج)</option>
+                {categories.map(cat => (
+                  <option key={cat.id} value={cat.name}>
+                    {cat.icon || "🏷️"} {cat.name} ({products.filter(p => p.category === cat.name).length} منتجات)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Label Sheet Format */}
+            <div className="space-y-1.5">
+              <label className="text-slate-300">تنسيق ورقة الملصقات:</label>
+              <select
+                value={barcodeFormat}
+                onChange={e => setBarcodeFormat(e.target.value as any)}
+                className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-white font-bold focus:outline-none"
+              >
+                <option value="sheet_24">📄 ورقة A4 قياسية (24 ملصق - 3 أعمدة × 8 صفوف)</option>
+                <option value="sheet_40">📑 ورقة A4 مدمجة (40 ملصق - 4 أعمدة × 10 صفوف)</option>
+                <option value="thermal_single">🏷️ طابعة رول حرارية فردية (50mm × 30mm)</option>
+              </select>
+            </div>
+
+            {/* Copies per Product */}
+            <div className="space-y-1.5">
+              <label className="text-slate-300">عدد الملصقات لكل صنف:</label>
+              <div className="flex items-center gap-1.5">
+                {[1, 2, 4, 8, 12].map(n => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setBarcodeCopies(n)}
+                    className={`flex-1 py-2 rounded-xl text-center text-xs font-black cursor-pointer border ${
+                      barcodeCopies === n
+                        ? "bg-amber-500 text-slate-950 border-amber-400 shadow-md"
+                        : "bg-slate-950 text-slate-300 border-white/5 hover:bg-white/5"
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Content Toggles */}
+            <div className="space-y-1.5">
+              <label className="text-slate-300">عناصر الملصق الظاهرة:</label>
+              <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setBarcodeShowCompany(!barcodeShowCompany)}
+                  className={`p-1.5 rounded-lg border text-center cursor-pointer font-bold ${
+                    barcodeShowCompany
+                      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                      : "bg-slate-950 text-slate-500 border-white/5 line-through"
+                  }`}
+                >
+                  🏢 اسم الشركة
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBarcodeShowName(!barcodeShowName)}
+                  className={`p-1.5 rounded-lg border text-center cursor-pointer font-bold ${
+                    barcodeShowName
+                      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                      : "bg-slate-950 text-slate-500 border-white/5 line-through"
+                  }`}
+                >
+                  📦 اسم المنتج
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBarcodeShowPrice(!barcodeShowPrice)}
+                  className={`p-1.5 rounded-lg border text-center cursor-pointer font-bold ${
+                    barcodeShowPrice
+                      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                      : "bg-slate-950 text-slate-500 border-white/5 line-through"
+                  }`}
+                >
+                  💰 سعر البيع
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBarcodeShowCode(!barcodeShowCode)}
+                  className={`p-1.5 rounded-lg border text-center cursor-pointer font-bold ${
+                    barcodeShowCode
+                      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                      : "bg-slate-950 text-slate-500 border-white/5 line-through"
+                  }`}
+                >
+                  🔢 رقم الباركود
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Product Selection Checkboxes Bar */}
+          <div className="bg-slate-900/60 p-3 rounded-2xl border border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs font-bold">
+            <div className="flex items-center gap-2">
+              <span className="text-slate-300">
+                المنتجات المحددة للطباعة:{" "}
+                <b className="text-amber-300 font-mono">
+                  {barcodeSelectedProductIds.length} من {products.length}
+                </b>
+              </span>
+              <span className="text-slate-500">|</span>
+              <span className="text-slate-400">
+                إجمالي الملصقات المطلوب طباعتها:{" "}
+                <b className="text-emerald-400 font-mono">
+                  {barcodeSelectedProductIds.length * barcodeCopies} ملصق
+                </b>
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const filtered = barcodeCategory === "all" ? products : products.filter(p => p.category === barcodeCategory);
+                  setBarcodeSelectedProductIds(filtered.map(p => p.id));
+                }}
+                className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-amber-300 text-[11px] cursor-pointer"
+              >
+                تحديد جميع منتجات التصفية
+              </button>
+              <button
+                type="button"
+                onClick={() => setBarcodeSelectedProductIds([])}
+                className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 text-[11px] cursor-pointer"
+              >
+                إلغاء التحديد
+              </button>
+            </div>
+          </div>
+
+          {/* Live Print Preview Sheet Area */}
+          <div className="bg-slate-950 p-6 rounded-2xl border border-white/10 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-400">
+                <Eye className="w-4 h-4 text-amber-400" />
+                <span>معاينة حية لملصقات الباركود القابلة للطباعة:</span>
+              </div>
+              <span className="text-[11px] font-mono text-slate-500">
+                {barcodeFormat === "sheet_24" ? "A4 (3x8 Grid)" : barcodeFormat === "sheet_40" ? "A4 (4x10 Grid)" : "Roll 50x30mm"}
+              </span>
+            </div>
+
+            {/* Printable Container with Print Styles */}
+            <div
+              id="printable-barcode-sheet"
+              className={`p-4 bg-white rounded-xl text-slate-900 border border-slate-300 overflow-hidden shadow-inner ${
+                barcodeFormat === "sheet_24"
+                  ? "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3"
+                  : barcodeFormat === "sheet_40"
+                  ? "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2"
+                  : "flex flex-col items-center gap-3 max-w-xs mx-auto"
+              }`}
+            >
+              {products
+                .filter(p => barcodeSelectedProductIds.includes(p.id))
+                .flatMap(prod => Array(barcodeCopies).fill(prod))
+                .map((prod, idx) => (
+                  <div
+                    key={`${prod.id}_${idx}`}
+                    className="p-2.5 bg-white border border-dashed border-slate-300 rounded-lg text-center flex flex-col justify-between items-center space-y-1.5 shadow-xs"
+                    style={{ minHeight: barcodeFormat === "thermal_single" ? "120px" : "105px" }}
+                  >
+                    {/* Company Header */}
+                    {barcodeShowCompany && (
+                      <div className="text-[9px] font-black text-slate-600 truncate max-w-[170px] uppercase">
+                        {activeCompany.name}
+                      </div>
+                    )}
+
+                    {/* Product Name */}
+                    {barcodeShowName && (
+                      <div className="text-[11px] font-black text-slate-900 truncate max-w-[180px] leading-tight">
+                        {prod.name}
+                      </div>
+                    )}
+
+                    {/* Realistic SVG Barcode Stripes */}
+                    <div className="w-full flex flex-col items-center justify-center my-0.5">
+                      <SimpleBarcodeSvg value={prod.barcode || "12345678"} height={28} />
+                      {barcodeShowCode && (
+                        <span className="text-[9px] font-mono font-bold tracking-widest text-slate-700 mt-0.5">
+                          {prod.barcode || "12345678"}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Price Tag */}
+                    {barcodeShowPrice && (
+                      <div className="w-full pt-1 border-t border-slate-200 flex items-center justify-between text-slate-950 font-black">
+                        <span className="text-[9px] text-slate-500 font-bold">السعر:</span>
+                        <span className="text-xs font-mono text-emerald-700">
+                          {prod.selling_price.toLocaleString()} ر.س
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+              {barcodeSelectedProductIds.length === 0 && (
+                <div className="col-span-full py-12 text-center text-slate-400 font-bold text-xs">
+                  لم يتم تحديد أي منتج للطباعة بعد. اختر تصنيفاً أو حدد منتجات من القائمة أعلاه.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* ========================================================= */}
       {/* MODAL: ADD / EDIT DYNAMIC CATEGORY */}

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   FileText,
   TrendingUp,
@@ -81,6 +81,7 @@ interface FinancialReportsProps {
   companies: Company[];
   extracts: Extract[];
   currentUser: AuthUser | null;
+  activeCompanyId?: string;
 }
 
 type ReportType = "balance_sheet" | "income_statement" | "cash_flow";
@@ -93,15 +94,32 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
   projects = [],
   companies = [],
   extracts = [],
-  currentUser
+  currentUser,
+  activeCompanyId
 }) => {
   const [reportType, setReportType] = useState<ReportType>("income_statement");
   const [isPrintAll, setIsPrintAll] = useState<boolean>(false);
 
+  // Strict Single Company Resolution (Financial statements MUST NEVER mix or aggregate across companies)
+  const resolveTargetCompId = () => {
+    if (activeCompanyId && activeCompanyId !== "all") return activeCompanyId;
+    if (currentUser?.company_id) return currentUser.company_id;
+    if (companies && companies.length > 0) return companies[0].id;
+    return "arab_world";
+  };
+
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string>(resolveTargetCompId());
+
+  // Keep synced if active company in header changes
+  useEffect(() => {
+    if (activeCompanyId && activeCompanyId !== "all" && activeCompanyId !== selectedCompanyId) {
+      setSelectedCompanyId(activeCompanyId);
+    }
+  }, [activeCompanyId]);
+
   // Filters State
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
-  const [selectedCompanyId, setSelectedCompanyId] = useState<string>("all");
   const [selectedProjectId, setSelectedProjectId] = useState<string>("all");
   const [selectedClientName, setSelectedClientName] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -110,47 +128,48 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
   const [showFilters, setShowFilters] = useState<boolean>(true);
 
   const selectedCompany = useMemo(() => {
-    return companies.find((c) => c.id === selectedCompanyId);
+    return companies.find((c) => c.id === selectedCompanyId) || companies[0];
   }, [companies, selectedCompanyId]);
 
   const selectedCompanyLogo = useMemo(() => {
-    if (!selectedCompanyId || selectedCompanyId === "all") return "";
+    if (!selectedCompanyId) return "";
     try {
-      return window.localStorage.getItem(`aw_company_logo_${selectedCompanyId}`) || "";
+      return window.localStorage.getItem(`aw_company_logo_${selectedCompanyId}`) || (selectedCompany as any)?.logo_url || "";
     } catch {
       return "";
     }
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, selectedCompany]);
 
-  // Dynamic lists for filter dropdowns
+  // Dynamic lists for filter dropdowns strictly scoped to THIS company
   const distinctProjects = useMemo(() => {
     const list = new Set<string>();
-    projects.forEach((p) => p.name && list.add(p.name));
-    installments.forEach((i) => i.project && list.add(i.project));
-    receipts.forEach((r) => r.project && list.add(r.project));
+    const targetComp = selectedCompanyId || resolveTargetCompId();
+    projects.filter(p => (p.company_id || "arab_world") === targetComp).forEach((p) => p.name && list.add(p.name));
+    installments.filter(i => (i.company_id || "arab_world") === targetComp).forEach((i) => i.project && list.add(i.project));
+    receipts.filter(r => (r.company_id || "arab_world") === targetComp).forEach((r) => r.project && list.add(r.project));
     return Array.from(list).sort();
-  }, [projects, installments, receipts]);
+  }, [projects, installments, receipts, selectedCompanyId]);
 
   const distinctClients = useMemo(() => {
     const list = new Set<string>();
-    installments.forEach((i) => i.client && list.add(i.client));
-    receipts.forEach((r) => r.from_name && list.add(r.from_name));
-    extracts.forEach((e) => e.client_name && list.add(e.client_name));
+    const targetComp = selectedCompanyId || resolveTargetCompId();
+    installments.filter(i => (i.company_id || "arab_world") === targetComp).forEach((i) => i.client && list.add(i.client));
+    receipts.filter(r => (r.company_id || "arab_world") === targetComp).forEach((r) => r.from_name && list.add(r.from_name));
+    extracts.filter(e => (e.company_id || "arab_world") === targetComp).forEach((e) => e.client_name && list.add(e.client_name));
     return Array.from(list).sort();
-  }, [installments, receipts, extracts]);
+  }, [installments, receipts, extracts, selectedCompanyId]);
 
   const authorizedCompanies = useMemo(() => {
-    if (!currentUser) return [];
+    if (!currentUser) return companies;
     if (currentUser.role === "admin") return companies;
     const userCompany = currentUser.company_id || "arab_world";
     return companies.filter((c) => c.id === userCompany);
   }, [currentUser, companies]);
 
-  // Reset filters
+  // Reset filters (preserves selected company)
   const resetFilters = () => {
     setFromDate("");
     setToDate("");
-    setSelectedCompanyId("all");
     setSelectedProjectId("all");
     setSelectedClientName("all");
     setSearchQuery("");
@@ -167,15 +186,11 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
       return true;
     };
 
-    // 2. Company / Branch filter
+    // 2. Strict Company Isolation: Transactions must match ONLY the selected company
     const matchesCompany = (compId?: string) => {
+      const target = selectedCompanyId || resolveTargetCompId();
       const itemComp = compId || "arab_world";
-      if (currentUser?.role !== "admin") {
-        const userComp = currentUser?.company_id || "arab_world";
-        if (itemComp !== userComp) return false;
-      }
-      if (selectedCompanyId === "all") return true;
-      return itemComp === selectedCompanyId;
+      return itemComp === target;
     };
 
     // 3. Project filter
@@ -563,18 +578,18 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
 
             {/* Branch / Company */}
             <div className="space-y-1.5">
-              <label className="block text-[10px] font-black text-slate-400">الفرع / الشركة التابعة</label>
+              <label className="block text-[10px] font-black text-amber-400">الشركة المعنية بالقائمة المالية (معاملات خاصة معزولة)</label>
               <div className="relative">
-                <Building className="absolute right-3.5 top-3 w-4 h-4 text-slate-500 pointer-events-none" />
+                <Building className="absolute right-3.5 top-3 w-4 h-4 text-amber-400 pointer-events-none" />
                 <select
+                  disabled={currentUser?.role !== "admin" || authorizedCompanies.length <= 1}
                   value={selectedCompanyId}
                   onChange={(e) => setSelectedCompanyId(e.target.value)}
-                  className="w-full bg-slate-950/60 border border-white/10 rounded-xl pr-10 pl-3 py-2 text-xs font-bold text-white focus:outline-none focus:border-amber-500/50 appearance-none"
+                  className="w-full bg-slate-950/80 border border-amber-500/30 rounded-xl pr-10 pl-3 py-2 text-xs font-bold text-amber-300 focus:outline-none focus:border-amber-400 appearance-none disabled:opacity-80 cursor-pointer"
                 >
-                  <option value="all">كافة الفروع المتاحة</option>
                   {authorizedCompanies.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name}
+                      🏢 {c.name}
                     </option>
                   ))}
                 </select>
@@ -787,18 +802,27 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
               
               <div>
                 <h1 className="text-lg md:text-xl font-black text-white print:text-black tracking-tight font-sans">
-                  {selectedCompanyId === "all" ? "عرب وورلد آدز للحسابات والتقسيط" : (selectedCompany?.name || "عرب وورلد آدز للحسابات والتقسيط")}
+                  {selectedCompany?.name || "الشركة المعتمدة"}
                 </h1>
                 <p className="text-xs text-slate-400 print:text-slate-600 mt-1 font-bold">
-                  {selectedCompanyId === "all" 
-                    ? "كشف محاسبي مدمج لكافة الفروع والشركات التابعة" 
-                    : `القوائم والتقارير المالية المعتمدة للشركة`}
+                  القوائم والتقارير المالية المعتمدة للشركة بمعاملاتها الخاصة فقط
                 </p>
-                {selectedCompanyId !== "all" && selectedCompany?.commercial_register && (
-                  <span className="inline-block text-[10px] text-slate-500 font-mono mt-1 font-semibold print:text-slate-600">
-                    رقم السجل التجاري: {selectedCompany.commercial_register}
+                <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                  {selectedCompany?.commercial_register && (
+                    <span className="inline-block text-[10px] text-slate-400 font-mono font-semibold print:text-slate-600">
+                      السجل التجاري: {selectedCompany.commercial_register}
+                    </span>
+                  )}
+                  {selectedCompany?.tax_no && (
+                    <span className="inline-block text-[10px] text-slate-400 font-mono font-semibold print:text-slate-600">
+                      | الرقم الضريبي: {selectedCompany.tax_no}
+                    </span>
+                  )}
+                  <span className="inline-flex items-center gap-1 text-[9px] font-black bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full print:border-slate-900 print:text-black">
+                    <span>🔒</span>
+                    <span>معاملات مالية معزولة خاصة بهذه الشركة فقط</span>
                   </span>
-                )}
+                </div>
               </div>
             </div>
 
@@ -806,7 +830,7 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
             <div className="flex flex-col text-right md:text-left md:items-end gap-1.5 shrink-0 w-full md:w-auto">
               <div className="bg-white/5 px-4 py-1.5 rounded-xl border border-white/5 print:border-slate-950 print:bg-transparent inline-block self-start md:self-auto print:text-black">
                 <span className="block text-[8px] font-bold text-slate-400 print:text-slate-500">حالة البيانات والتدقيق</span>
-                <span className="block text-[10px] font-black text-emerald-400 print:text-slate-950">🟢 معتمدة ومدققة فوري</span>
+                <span className="block text-[10px] font-black text-emerald-400 print:text-slate-950">🟢 مدققة ومستقلة فوري</span>
               </div>
               <div className="text-[10px] text-slate-400 print:text-slate-600 font-medium">
                 <span className="block">تاريخ الاستخراج: {new Date().toLocaleDateString("ar-SA")}</span>
@@ -826,8 +850,8 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
                 تقرير مالي للفترة المحتسبة: {fromDate || "البداية"} إلى {toDate || "الآن"}
               </p>
             </div>
-            {selectedCompanyId !== "all" && selectedCompany?.phone && (
-              <span className="text-[10px] text-slate-500 print:text-slate-600 font-mono font-bold mt-2 sm:mt-0">
+            {selectedCompany?.phone && (
+              <span className="text-[10px] text-slate-400 print:text-slate-600 font-mono font-bold mt-2 sm:mt-0">
                 هاتف التواصل: {selectedCompany.phone}
               </span>
             )}

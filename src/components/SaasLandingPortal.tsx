@@ -48,6 +48,12 @@ interface SaasLandingPortalProps {
     company_slug?: string;
     company_manager?: string;
     company_capital?: number;
+    company_domain?: string;
+    company_domain_ext?: string;
+    company_website?: string;
+    company_city?: string;
+    company_record_no?: string;
+    company_tax_no?: string;
   }) => Promise<{ success: boolean; message?: string }>;
   onNavigateToSlug: (slug: string) => void;
   showToast: (message: string, type?: "success" | "error" | "info") => void;
@@ -109,6 +115,11 @@ export function SaasLandingPortal({
   const [regNewCompName, setRegNewCompName] = useState("");
   const [regNewCompSlug, setRegNewCompSlug] = useState("");
   const [regNewCompCapital, setRegNewCompCapital] = useState<number | "">("");
+  const [regNewCompDomain, setRegNewCompDomain] = useState("");
+  const [regNewCompDomainExt, setRegNewCompDomainExt] = useState(".com");
+  const [regNewCompCity, setRegNewCompCity] = useState("الرياض");
+  const [regNewCompRecordNo, setRegNewCompRecordNo] = useState("");
+  const [regNewCompTaxNo, setRegNewCompTaxNo] = useState("");
   const [isRegisteringUser, setIsRegisteringUser] = useState(false);
 
   const handleUserRegisterSubmit = async (e: React.FormEvent) => {
@@ -135,6 +146,10 @@ export function SaasLandingPortal({
     setIsRegisteringUser(true);
     try {
       if (onRegisterUser) {
+        const fullDomain = regNewCompDomain.trim()
+          ? `${regNewCompDomain.trim().toLowerCase()}${regNewCompDomainExt}`
+          : `${regNewCompSlug.trim().toLowerCase()}${regNewCompDomainExt}`;
+
         const res = await onRegisterUser({
           name: regName.trim(),
           code: regCode.trim(),
@@ -148,6 +163,12 @@ export function SaasLandingPortal({
           company_slug: regType === "new_company" ? regNewCompSlug.trim() : undefined,
           company_manager: regType === "new_company" ? regName.trim() : undefined,
           company_capital: regType === "new_company" ? Number(regNewCompCapital || 0) : undefined,
+          company_domain: regType === "new_company" ? fullDomain : undefined,
+          company_domain_ext: regType === "new_company" ? regNewCompDomainExt : undefined,
+          company_website: regType === "new_company" ? `https://${fullDomain}` : undefined,
+          company_city: regType === "new_company" ? regNewCompCity.trim() : undefined,
+          company_record_no: regType === "new_company" ? regNewCompRecordNo.trim() : undefined,
+          company_tax_no: regType === "new_company" ? regNewCompTaxNo.trim() : undefined,
         });
 
         if (res.success) {
@@ -160,6 +181,9 @@ export function SaasLandingPortal({
           setRegNewCompName("");
           setRegNewCompSlug("");
           setRegNewCompCapital("");
+          setRegNewCompDomain("");
+          setRegNewCompRecordNo("");
+          setRegNewCompTaxNo("");
         }
       } else {
         showToast("خدمة التسجيل المباشر غير مهيأة حالياً", "error");
@@ -1035,6 +1059,71 @@ export function SaasLandingPortal({
                             value={regNewCompCapital}
                             onChange={(e) => setRegNewCompCapital(e.target.value === "" ? "" : Number(e.target.value))}
                             className="w-full h-10 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Domain and Domain Extension Selection */}
+                      <div className="p-2.5 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
+                        <label className="text-[10px] font-bold text-amber-300 block">نطاق الشركة وامتداد الدومين (Domain & Extension):</label>
+                        <div className="flex items-center gap-1.5" dir="ltr">
+                          <span className="text-slate-500 font-mono text-[11px] font-bold pl-1">https://</span>
+                          <input
+                            type="text"
+                            placeholder={regNewCompSlug || "company-domain"}
+                            value={regNewCompDomain}
+                            onChange={(e) => setRegNewCompDomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                            className="flex-1 h-9 px-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500"
+                          />
+                          <select
+                            value={regNewCompDomainExt}
+                            onChange={(e) => setRegNewCompDomainExt(e.target.value)}
+                            className="h-9 px-2 bg-slate-900 border border-amber-500/30 rounded-xl text-xs font-mono font-black text-amber-400 focus:outline-none cursor-pointer"
+                          >
+                            <option value=".com">.com</option>
+                            <option value=".sa">.sa (سعودي)</option>
+                            <option value=".com.sa">.com.sa</option>
+                            <option value=".net">.net</option>
+                            <option value=".org">.org</option>
+                            <option value=".online">.online</option>
+                            <option value=".edu.sa">.edu.sa</option>
+                            <option value=".store">.store</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Official Registration & Location */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-300">السجل التجاري (CR)</label>
+                          <input
+                            type="text"
+                            placeholder="1010xxxxxx"
+                            value={regNewCompRecordNo}
+                            onChange={(e) => setRegNewCompRecordNo(e.target.value)}
+                            className="w-full h-9 px-2.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-white focus:outline-none text-left"
+                            dir="ltr"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-300">الرقم الضريبي (VAT)</label>
+                          <input
+                            type="text"
+                            placeholder="3xxxxxxxxxxxxxx"
+                            value={regNewCompTaxNo}
+                            onChange={(e) => setRegNewCompTaxNo(e.target.value)}
+                            className="w-full h-9 px-2.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-white focus:outline-none text-left"
+                            dir="ltr"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-300">المدينة / المقر</label>
+                          <input
+                            type="text"
+                            placeholder="الرياض، جدة، الدمام..."
+                            value={regNewCompCity}
+                            onChange={(e) => setRegNewCompCity(e.target.value)}
+                            className="w-full h-9 px-2.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none"
                           />
                         </div>
                       </div>

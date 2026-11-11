@@ -51,12 +51,35 @@ export interface UserPerms {
   hr_salaries_view?: boolean;
   hr_reports_print?: boolean;
   pos?: boolean;
+  pos_cashier?: boolean;
+  pos_inventory?: boolean;
+  pos_purchases?: boolean;
+  pos_suppliers?: boolean;
+  pos_categories?: boolean;
+  pos_barcode?: boolean;
+  pos_products_add?: boolean;
+  pos_products_edit?: boolean;
+  pos_products_delete?: boolean;
+  pos_settings?: boolean;
+  hr_drivers_view?: boolean;
+  hr_drivers_add?: boolean;
+  hr_drivers_delete?: boolean;
 }
 
 export const CASHIER_DEFAULT_PERMS: UserPerms = {
   region: "",
   dashboard: true,
   pos: true,
+  pos_cashier: true,
+  pos_inventory: true,
+  pos_purchases: true,
+  pos_suppliers: true,
+  pos_categories: true,
+  pos_barcode: true,
+  pos_products_add: true,
+  pos_products_edit: true,
+  pos_products_delete: false,
+  pos_settings: false,
   attendance: true,
   installmentsView: true,
   installmentsAdd: true,
@@ -314,7 +337,60 @@ export interface Company {
   promissory_note_template?: string; // صيغة سند الأمر الافتراضية للشركة
   logo_url?: string;  // شعار الشركة كـ URL أو base64
   letterhead_url?: string; // كليشة الشركة الرسمية كصورة كاملة A4
+  domain?: string;          // اسم الدومين (مثل: arab1000)
+  domain_extension?: string;// امتداد الدومين (.com, .sa, .com.sa, .online, إلخ)
+  website?: string;         // الموقع الإلكتروني الكامل
+  email?: string;           // البريد الإلكتروني الرسمي
+  city?: string;            // المدينة والمقر
+  postal_code?: string;     // الرمز البريدي
+  currency?: string;        // العملة الافتراضية
+  bank_name?: string;       // اسم البنك المعتمد
+  iban?: string;            // رقم الآيبان
+  stamp_url?: string;       // ختم الشركة الرسمي
+  signature_url?: string;   // توقيع المدير العام المعتمد
   treasuries?: string[]; // قائمة الخزائن الخاصة بالشركة
+  created_at?: string;
+}
+
+export interface Driver {
+  id: string;
+  company_id: string;
+  name: string;
+  iqama_or_national_id?: string;
+  iqama_no?: string;
+  nationality: string;
+  phone: string;
+  license_number?: string;
+  license_no?: string;
+  license_type: "خاصة" | "خصوصي" | "عمومي" | "نقل ثقيل" | "نقل عام" | "دراجة نارية" | "معدات ثقيلة";
+  license_expiry: string;
+  assigned_vehicle?: string;
+  assigned_vehicle_id?: string;
+  vehicle_plate?: string;
+  status: "نشط" | "في إجازة" | "إجازة" | "موقوف" | "منتهي العقد";
+  notes?: string;
+  created_at?: string;
+}
+
+export interface HrCustodyRecord {
+  id: string;
+  company_id: string;
+  employee_id: string;
+  employee_name: string;
+  type: string;
+  description: string;
+  serial_no: string;
+  value: number;
+  delivery_date: string;
+  delivery_condition: string;
+  project_branch: string;
+  image_url?: string;
+  delivered_by: string;
+  signature_url?: string;
+  status: "مستلمة" | "مرتجعة" | "تالفة" | "مفقودة";
+  return_date?: string;
+  return_condition?: string;
+  notes?: string;
   created_at?: string;
 }
 

@@ -594,6 +594,25 @@
         "default_treasury": { "type": "string" }
       },
       "required": ["id", "company_id"]
+    },
+    "Driver": {
+      "title": "Driver",
+      "description": "Company drivers, driving licenses, and vehicle assignments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "iqama_or_national_id": { "type": "string" },
+        "nationality": { "type": "string" },
+        "phone": { "type": "string" },
+        "license_number": { "type": "string" },
+        "license_type": { "type": "string" },
+        "license_expiry": { "type": "string" },
+        "assigned_vehicle": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "name", "phone", "license_number"]
     }
   },
   "firestore": {
@@ -696,6 +715,10 @@
     "pos_configs": {
       "schema": "PosCompanyConfig",
       "description": "Company-specific POS customization and field visibility"
+    },
+    "hr_drivers": {
+      "schema": "Driver",
+      "description": "Company drivers and vehicle fleet personnel"
     }
   }
 }
