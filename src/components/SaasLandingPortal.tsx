@@ -763,35 +763,6 @@ export function SaasLandingPortal({
                       </div>
                     </div>
 
-                    {/* Quick Presets: Cashier and Admin */}
-                    <div className="grid grid-cols-2 gap-2 pt-0.5">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLoginCode("cashier");
-                          setLoginPass("123456");
-                          showToast("💰 تم إدخال بيانات الكاشير (cashier / 123456) - اضغط دخول لوحة التحكم", "info");
-                        }}
-                        className="h-10 px-2 bg-gradient-to-r from-amber-500/15 to-yellow-500/10 hover:from-amber-500/25 hover:to-yellow-500/20 border border-amber-500/35 text-amber-300 font-black rounded-xl text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-                        title="تسجيل دخول كاشير مصرح بكامل صلاحيات الصندوق والتحصيل"
-                      >
-                        <span>💰</span>
-                        <span>دخول كاشير الصندوق</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLoginCode("1007363904");
-                          setLoginPass("139213");
-                          showToast("👑 تم إدخال بيانات المدير العام (1007363904) - اضغط دخول", "info");
-                        }}
-                        className="h-10 px-2 bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white font-bold rounded-xl text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-                        title="دخول سريع للمدير العام"
-                      >
-                        <span>👑</span>
-                        <span>دخول المدير العام</span>
-                      </button>
-                    </div>
 
                     {/* Submit Button */}
                     <button

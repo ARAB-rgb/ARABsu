@@ -7969,30 +7969,15 @@ body {
               )}
             </button>
 
-            {/* Quick Preset Credentials (Cashier & 2FA) */}
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setLoginCode("cashier");
-                  setLoginPass("123456");
-                  showToast("💰 تم إدخال بيانات الكاشير (cashier / 123456) - اضغط اعتماد الدخول", "info");
-                }}
-                className="h-11 bg-gradient-to-r from-amber-500/15 to-yellow-500/10 hover:from-amber-500/25 hover:to-yellow-500/20 border border-amber-500/35 text-amber-300 font-black rounded-2xl text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-                title="تسجيل دخول كاشير مصرح بكامل صلاحيات الصندوق والتحصيل"
-              >
-                <span>💰</span>
-                <span>دخول كاشير الصندوق</span>
-              </button>
-
-              {/* Authenticator QR Code / 2FA Barcode Button */}
+            {/* Authenticator QR Code / 2FA Barcode Button */}
+            <div className="pt-0.5">
               <button
                 type="button"
                 onClick={() => setShowAuthModal(true)}
-                className="h-11 bg-slate-900/80 hover:bg-slate-850 border border-slate-800 text-slate-300 hover:text-white font-bold rounded-2xl text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                className="w-full h-11 bg-slate-900/80 hover:bg-slate-850 border border-slate-800 hover:border-amber-500/30 text-slate-300 hover:text-white font-bold rounded-2xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-95"
               >
                 <span className="text-sm">📱</span>
-                <span>باركود 2FA</span>
+                <span>رمز المصادقة والباركود (Authenticator 2FA)</span>
               </button>
             </div>
 
