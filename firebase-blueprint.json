@@ -453,6 +453,147 @@
         "created_at": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "company_id", "month", "employee_id", "net_salary"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Products and inventory items for sales and purchases",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "barcode": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "unit": { "type": "string" },
+        "cost_price": { "type": "number" },
+        "selling_price": { "type": "number" },
+        "min_selling_price": { "type": "number" },
+        "stock_qty": { "type": "number" },
+        "min_stock_alert": { "type": "number" },
+        "supplier_id": { "type": "string" },
+        "supplier_name": { "type": "string" },
+        "location": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "barcode", "name", "cost_price", "selling_price", "stock_qty"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Real suppliers directory for purchases and debt ledger",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "commercial_register": { "type": "string" },
+        "tax_number": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "city": { "type": "string" },
+        "balance": { "type": "number" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "phone"]
+    },
+    "PurchaseInvoice": {
+      "title": "PurchaseInvoice",
+      "description": "Purchases and stock replenishment invoices from suppliers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "invoice_no": { "type": "string" },
+        "supplier_id": { "type": "string" },
+        "supplier_name": { "type": "string" },
+        "date": { "type": "string" },
+        "payment_method": { "type": "string" },
+        "treasury": { "type": "string" },
+        "subtotal": { "type": "number" },
+        "tax_rate": { "type": "number" },
+        "tax_amount": { "type": "number" },
+        "total": { "type": "number" },
+        "paid_amount": { "type": "number" },
+        "remaining_amount": { "type": "number" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "invoice_no", "supplier_id", "total"]
+    },
+    "PosSale": {
+      "title": "PosSale",
+      "description": "Cashier POS sales records and invoices",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "sale_no": { "type": "string" },
+        "cashier_name": { "type": "string" },
+        "cashier_id": { "type": "string" },
+        "date": { "type": "string" },
+        "customer_name": { "type": "string" },
+        "customer_phone": { "type": "string" },
+        "customer_id": { "type": "string" },
+        "subtotal": { "type": "number" },
+        "discount_amount": { "type": "number" },
+        "tax_rate": { "type": "number" },
+        "tax_amount": { "type": "number" },
+        "total": { "type": "number" },
+        "payment_method": { "type": "string" },
+        "cash_amount": { "type": "number" },
+        "card_amount": { "type": "number" },
+        "cash_tendered": { "type": "number" },
+        "change_returned": { "type": "number" },
+        "treasury": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "sale_no", "cashier_name", "total", "payment_method", "treasury"]
+    },
+    "PosCategory": {
+      "title": "PosCategory",
+      "description": "Dynamic categories for POS cashier and inventory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "icon": { "type": "string" },
+        "color": { "type": "string" },
+        "activity_type": { "type": "string" },
+        "description": { "type": "string" },
+        "sort_order": { "type": "number" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name"]
+    },
+    "PosCompanyConfig": {
+      "title": "PosCompanyConfig",
+      "description": "Company-specific POS customization and field visibility controls",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "activity_type": { "type": "string" },
+        "is_enabled": { "type": "boolean" },
+        "show_barcode": { "type": "boolean" },
+        "show_cost_price": { "type": "boolean" },
+        "show_discount": { "type": "boolean" },
+        "show_customer_select": { "type": "boolean" },
+        "show_units": { "type": "boolean" },
+        "show_tax": { "type": "boolean" },
+        "allow_price_override": { "type": "boolean" },
+        "show_quick_amounts": { "type": "boolean" },
+        "show_notes": { "type": "boolean" },
+        "receipt_header": { "type": "string" },
+        "receipt_footer": { "type": "string" },
+        "default_treasury": { "type": "string" }
+      },
+      "required": ["id", "company_id"]
     }
   },
   "firestore": {
@@ -531,6 +672,30 @@
     "hr_payrolls": {
       "schema": "HrPayroll",
       "description": "HR Employee monthly salary disbursement records"
+    },
+    "products": {
+      "schema": "Product",
+      "description": "Products inventory for POS and store management"
+    },
+    "suppliers": {
+      "schema": "Supplier",
+      "description": "Vendors and suppliers directory"
+    },
+    "purchases": {
+      "schema": "PurchaseInvoice",
+      "description": "Purchases and stock replenishment invoices"
+    },
+    "pos_sales": {
+      "schema": "PosSale",
+      "description": "Cashier POS sales records and invoices"
+    },
+    "pos_categories": {
+      "schema": "PosCategory",
+      "description": "Dynamic categories for POS cashier and inventory"
+    },
+    "pos_configs": {
+      "schema": "PosCompanyConfig",
+      "description": "Company-specific POS customization and field visibility"
     }
   }
 }

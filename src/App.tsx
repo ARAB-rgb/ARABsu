@@ -9,7 +9,8 @@ import {
   Home, ClipboardList, FileText, Landmark, TrendingUp, TrendingDown, Briefcase, Users,
   Settings, LogOut, Calendar, MapPin, User, Phone, Shield, Search, Plus,
   Edit2, Trash2, Download, AlertTriangle, Sparkles, Clock, RefreshCw, Key, Printer, Building, ChevronDown, ChevronUp,
-  PieChart, ShieldAlert, ShieldCheck, List, Map as MapIcon, Filter, Eye, FileSignature, Mail
+  PieChart, ShieldAlert, ShieldCheck, List, Map as MapIcon, Filter, Eye, FileSignature, Mail,
+  ShoppingCart
 } from "lucide-react";
 
 import { User as AuthUser, UserPerms, CASHIER_DEFAULT_PERMS, Installment, Quote, OfficialLetter, Receipt, Payment, Expense, Project, Worker, DbSession, Company, Extract, AttendanceRecord } from "./types";
@@ -41,6 +42,7 @@ import { CompanyAssets } from "./components/CompanyAssets";
 import { AuthenticatorModal } from "./components/AuthenticatorModal";
 import { NotFound404 } from "./components/NotFound404";
 import { SubcontractsManager } from "./components/SubcontractsManager";
+import { PosCashierModule } from "./components/PosCashierModule";
 
 const compressAndResizeImage = (file: File, maxWidth = 800, maxHeight = 800, quality = 0.7): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -2953,6 +2955,7 @@ export default function App() {
         let isAllowed = false;
         if (activeSection === "my_profile") isAllowed = !isAttendanceOnly;
         else if (activeSection === "dashboard") isAllowed = hasAccess("dashboard");
+        else if (activeSection === "pos") isAllowed = !isAttendanceOnly;
         else if (activeSection === "attendance") isAllowed = hasAccess("attendance");
         else if (activeSection === "installments") isAllowed = hasAccess("installmentsView");
         else if (activeSection === "subcontracts") isAllowed = !isAttendanceOnly && hasAccess("installmentsView");
@@ -2974,6 +2977,7 @@ export default function App() {
         if (!isAllowed) {
           const sectionsOrdered = [
             "dashboard",
+            "pos",
             "my_profile",
             "attendance",
             "installments",
@@ -7711,6 +7715,7 @@ body {
   // Nav categories helpers
   const navigationItems = [
     { key: "dashboard", label: "الرئيسية", icon: Home, visible: !isAttendanceOnly && can("dashboard") },
+    { key: "pos", label: "الكاشير ونقاط البيع (POS)", icon: ShoppingCart, visible: !isAttendanceOnly },
     { key: "my_profile", label: "ملفي الوظيفي والخدمات الذاتية", icon: User, visible: !isAttendanceOnly },
     { key: "attendance", label: "بصمة الحضور والانصراف (GPS)", icon: MapPin, visible: can("attendance") },
     { key: "installments", label: "التقسيط والعقود", icon: ClipboardList, visible: !isAttendanceOnly && can("installmentsView") },
@@ -8199,6 +8204,18 @@ body {
               companies={getAuthorizedCompanies()}
               selectedCompanyId={selectedCompanyId}
               currentUser={currentUser}
+            />
+          )}
+
+          {activeSection === "pos" && (currentUser?.role === "admin" || can("pos") || !isAttendanceOnly) && (
+            <PosCashierModule
+              currentUser={currentUser}
+              companies={getAuthorizedCompanies()}
+              selectedCompanyId={selectedCompanyId}
+              clients={getVisibleInstallments()}
+              treasuries={getStoredTreasuries(selectedCompanyId, companies)}
+              showToast={showToast}
+              onRefreshEverything={loadEverything}
             />
           )}
 
@@ -13133,6 +13150,7 @@ CREATE TABLE extracts (
                             <span>
                               {k === "attendance" && "📍 بصمة الحضور والانصراف (GPS)"}
                               {k === "dashboard" && "📊 الرئيسية (لوحة التحكم العامة)"}
+                              {k === "pos" && "🛒 الكاشير ونقاط البيع (POS)"}
                               {k === "financial_reports" && "📈 التقارير والقوائم المالية"}
                               {k === "installmentsView" && "👁️ التقسيط والعقود"}
                               {k === "installmentsAdd" && "➕ إضافة عقد يومي"}
@@ -13873,6 +13891,7 @@ CREATE TABLE extracts (
           {/* Fallback Warning Card for Unauthorized Users */}
           {activeSection !== "my_profile" && !(
             (activeSection === "dashboard" && (currentUser?.role === "admin" || can("dashboard"))) ||
+            (activeSection === "pos" && (currentUser?.role === "admin" || can("pos") || !isAttendanceOnly)) ||
             (activeSection === "attendance" && (currentUser?.role === "admin" || can("attendance"))) ||
             (activeSection === "installments" && (currentUser?.role === "admin" || can("installmentsView"))) ||
             (activeSection === "subcontracts" && (currentUser?.role === "admin" || can("installmentsView"))) ||

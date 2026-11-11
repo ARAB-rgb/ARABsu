@@ -50,11 +50,13 @@ export interface UserPerms {
   hr_deductions_approve?: boolean;
   hr_salaries_view?: boolean;
   hr_reports_print?: boolean;
+  pos?: boolean;
 }
 
 export const CASHIER_DEFAULT_PERMS: UserPerms = {
   region: "",
   dashboard: true,
+  pos: true,
   attendance: true,
   installmentsView: true,
   installmentsAdd: true,
@@ -525,5 +527,138 @@ export interface Subcontract {
   updated_at?: string;
 }
 
+export interface Product {
+  id: string;
+  company_id?: string;
+  barcode: string;
+  name: string;
+  category: string;
+  unit: string;
+  cost_price: number;
+  selling_price: number;
+  min_selling_price?: number;
+  stock_qty: number;
+  min_stock_alert?: number;
+  supplier_id?: string;
+  supplier_name?: string;
+  location?: string;
+  notes?: string;
+  created_at?: string;
+  updated_at?: string;
+}
 
+export interface Supplier {
+  id: string;
+  company_id?: string;
+  name: string;
+  phone: string;
+  commercial_register?: string;
+  tax_number?: string;
+  email?: string;
+  address?: string;
+  city?: string;
+  balance?: number;
+  notes?: string;
+  created_at?: string;
+}
 
+export interface PurchaseItem {
+  product_id: string;
+  product_name: string;
+  barcode?: string;
+  unit: string;
+  quantity: number;
+  unit_cost: number;
+  subtotal: number;
+}
+
+export interface PurchaseInvoice {
+  id: string;
+  company_id?: string;
+  invoice_no: string;
+  supplier_id: string;
+  supplier_name: string;
+  date: string;
+  payment_method: "كاش" | "تحويل بنكي" | "آجل على الحساب" | "شيك";
+  treasury?: string;
+  items: PurchaseItem[];
+  subtotal: number;
+  tax_rate?: number;
+  tax_amount?: number;
+  total: number;
+  paid_amount: number;
+  remaining_amount: number;
+  status: "مدفوعة بالكامل" | "مدفوعة جزئياً" | "آجلة معلقة";
+  notes?: string;
+  created_at?: string;
+}
+
+export interface PosSaleItem {
+  product_id: string;
+  product_name: string;
+  barcode?: string;
+  unit: string;
+  quantity: number;
+  unit_price: number;
+  discount: number;
+  subtotal: number;
+}
+
+export interface PosSale {
+  id: string;
+  company_id?: string;
+  sale_no: string;
+  cashier_name: string;
+  cashier_id?: string;
+  date: string;
+  customer_name: string;
+  customer_phone?: string;
+  customer_id?: string;
+  items: PosSaleItem[];
+  subtotal: number;
+  discount_amount: number;
+  tax_rate: number;
+  tax_amount: number;
+  total: number;
+  payment_method: "كاش" | "مدى / شبكة" | "تحويل بنكي" | "آجل / على الحساب" | "مزدوج (كاش + شبكة)";
+  cash_amount?: number;
+  card_amount?: number;
+  cash_tendered?: number;
+  change_returned?: number;
+  treasury: string;
+  notes?: string;
+  created_at?: string;
+}
+
+export interface PosCategory {
+  id: string;
+  company_id?: string;
+  name: string;
+  icon?: string;
+  color?: string;
+  activity_type?: string;
+  description?: string;
+  sort_order?: number;
+  created_at?: string;
+}
+
+export interface PosCompanyConfig {
+  id: string;
+  company_id: string;
+  activity_type: string;
+  is_enabled: boolean;
+  show_barcode: boolean;
+  show_cost_price: boolean;
+  show_discount: boolean;
+  show_customer_select: boolean;
+  show_units: boolean;
+  show_tax: boolean;
+  allow_price_override: boolean;
+  show_quick_amounts: boolean;
+  show_notes: boolean;
+  receipt_header?: string;
+  receipt_footer?: string;
+  default_treasury?: string;
+  updated_at?: string;
+  updated_by?: string;
+}
