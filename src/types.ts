@@ -349,6 +349,12 @@ export interface Company {
   stamp_url?: string;       // ختم الشركة الرسمي
   signature_url?: string;   // توقيع المدير العام المعتمد
   treasuries?: string[]; // قائمة الخزائن الخاصة بالشركة
+  status?: "نشط" | "بانتظار موافقة السوبر أدمن" | "مرفوض" | string; // حالة الشركة واعتماد السوبر أدمن
+  admin_code?: string;      // معرّف المشرف العام
+  admin_pass?: string;      // كلمة مرور المشرف العام
+  approval_date?: string;   // تاريخ اعتماد السوبر أدمن
+  approved_by?: string;     // اسم السوبر أدمن المعتمد
+  rejection_reason?: string;// سبب رفض الطلب إن وجد
   created_at?: string;
 }
 

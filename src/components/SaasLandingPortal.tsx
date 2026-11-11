@@ -18,6 +18,7 @@ interface SaasLandingPortalProps {
     capital: number;
     adminCode: string;
     adminPass: string;
+    domain_extension?: string;
   }) => Promise<boolean>;
   onRegisterPendingUser?: (data: {
     name: string;
@@ -270,14 +271,16 @@ export function SaasLandingPortal({
   // Registration Form States
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
+  const [domainExtension, setDomainExtension] = useState(".com");
   const [manager, setManager] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [recordNo, setRecordNo] = useState("");
   const [taxNo, setTaxNo] = useState("");
-  const [capital, setCapital] = useState<number | " text-right font-sans">("");
+  const [capital, setCapital] = useState<number | "">("");
   const [adminCode, setAdminCode] = useState("");
   const [adminPass, setAdminPass] = useState("");
+  const [pendingApprovalModal, setPendingApprovalModal] = useState<{ name: string; slug: string } | null>(null);
 
   const handleSlugChange = (val: string) => {
     const cleaned = val.toLowerCase().replace(/[^a-z0-9-]/g, "");
@@ -317,9 +320,11 @@ export function SaasLandingPortal({
         capital: Number(capital || 0),
         adminCode: adminCode.trim(),
         adminPass: adminPass.trim(),
+        domain_extension: domainExtension,
       });
 
       if (success) {
+        setPendingApprovalModal({ name: name.trim(), slug: slug.trim() });
         setName("");
         setSlug("");
         setManager("");
@@ -1212,17 +1217,31 @@ export function SaasLandingPortal({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-300">رابط الشركة المخصص (Slug) <span className="text-rose-500">*</span></label>
-                    <input
-                      required
-                      type="text"
-                      placeholder="مثال: dev-company"
-                      value={slug}
-                      onChange={(e) => handleSlugChange(e.target.value)}
-                      className="w-full h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 placeholder-slate-600 focus:outline-none focus:border-amber-500 text-left"
-                      dir="ltr"
-                    />
-                    <span className="text-[9px] text-slate-500 block mt-0.5">سيكون الرابط المباشر للشركة: arab1000.online/{slug || "your-slug"}</span>
+                    <label className="text-[10px] font-bold text-slate-300">رابط الشركة وامتداد النطاق <span className="text-rose-500">*</span></label>
+                    <div className="flex gap-2">
+                      <input
+                        required
+                        type="text"
+                        placeholder="مثال: dev-company"
+                        value={slug}
+                        onChange={(e) => handleSlugChange(e.target.value)}
+                        className="flex-1 h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 placeholder-slate-600 focus:outline-none focus:border-amber-500 text-left"
+                        dir="ltr"
+                      />
+                      <select
+                        value={domainExtension}
+                        onChange={(e) => setDomainExtension(e.target.value)}
+                        className="w-24 h-10 px-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-300 focus:outline-none dir-ltr"
+                      >
+                        <option value=".com">.com</option>
+                        <option value=".sa">.sa</option>
+                        <option value=".com.sa">.com.sa</option>
+                        <option value=".net">.net</option>
+                        <option value=".online">.online</option>
+                        <option value=".store">.store</option>
+                      </select>
+                    </div>
+                    <span className="text-[9px] text-slate-500 block mt-0.5">سيكون النطاق المباشر: arab1000.online/{slug || "your-slug"} ({domainExtension})</span>
                   </div>
                 </div>
 
@@ -1364,6 +1383,63 @@ export function SaasLandingPortal({
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Super Admin Approval Confirmation Modal */}
+        {pendingApprovalModal && (
+          <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-slate-900 border-2 border-amber-500/40 w-full max-w-lg rounded-3xl p-6 sm:p-8 space-y-5 shadow-2xl relative text-right"
+              dir="rtl"
+            >
+              <div className="w-16 h-16 bg-gradient-to-br from-amber-500/20 to-yellow-500/10 border-2 border-amber-500/40 rounded-2xl flex items-center justify-center text-3xl mx-auto shadow-inner">
+                👑
+              </div>
+
+              <div className="text-center space-y-2">
+                <h3 className="text-base font-black text-white">
+                  تم إرسال طلب تأسيس الشركة إلى خانة السوبر أدمن بنجاح!
+                </h3>
+                <p className="text-xs text-slate-300 leading-relaxed font-medium">
+                  تم تسجيل منشأة <span className="text-amber-400 font-bold underline">«{pendingApprovalModal.name}»</span> بالمنظومة، وتم توجيه الطلب إلى <span className="text-white font-bold">خانة موافقات السوبر أدمن</span> للفحص والموافقة الرسمية.
+                </p>
+              </div>
+
+              <div className="bg-slate-950/80 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs">
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>اسم المنشأة:</span>
+                  <span className="text-white font-bold">{pendingApprovalModal.name}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>الرابط السحابي المقترح:</span>
+                  <span className="text-amber-300 font-mono font-bold">arab1000.online/{pendingApprovalModal.slug}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>حالة الطلب:</span>
+                  <span className="text-amber-400 font-bold bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[11px]">
+                    ⏳ بانتظار موافقة السوبر أدمن
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-2xl text-[11px] text-amber-200/90 leading-relaxed font-medium">
+                🛡️ حفاظاً على أمان المنظومة وسرية البيانات، سيتم تفعيل حساب المدير العام وفتح مساحة العمل فور قيام السوبر أدمن بالموافقة والاعتماد.
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPendingApprovalModal(null)}
+                  className="w-full h-11 bg-gradient-to-l from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-2xl text-xs transition-all shadow-lg shadow-amber-500/10 cursor-pointer"
+                >
+                  فهمت ذلك — العودة لبوابة الدخول
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

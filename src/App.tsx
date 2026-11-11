@@ -38,6 +38,7 @@ import { Attendance } from "./components/Attendance";
 import { SaasLandingPortal } from "./components/SaasLandingPortal";
 import { ProjectMap } from "./components/ProjectMap";
 import { HRModule } from "./components/HRModule";
+import { SuperAdminCompanyApprovals } from "./components/SuperAdminCompanyApprovals";
 import { CompanyAssets } from "./components/CompanyAssets";
 import { AuthenticatorModal } from "./components/AuthenticatorModal";
 import { NotFound404 } from "./components/NotFound404";
@@ -588,29 +589,40 @@ export default function App() {
     capital: number;
     adminCode: string;
     adminPass: string;
+    domain_extension?: string;
   }) => {
     try {
       const newCompanyId = `company_${companyData.slug}`;
-      const companyPayload = {
+      const companyPayload: Company = {
         id: newCompanyId,
         slug: companyData.slug,
         name: companyData.name,
         record_no: companyData.record_no,
+        commercial_register: companyData.record_no,
+        tax_no: companyData.tax_no,
+        capital: companyData.capital,
         manager: companyData.manager,
         phone: companyData.phone,
         address: companyData.address,
+        domain: companyData.slug,
+        domain_extension: companyData.domain_extension || ".com",
+        website: `https://${companyData.slug}${companyData.domain_extension || ".com"}`,
+        email: `info@${companyData.slug}${companyData.domain_extension || ".com"}`,
+        admin_code: companyData.adminCode,
+        admin_pass: companyData.adminPass,
+        status: "بانتظار موافقة السوبر أدمن", // <--- Dedicated pending status
         notes: `الرقم الضريبي: ${companyData.tax_no} | رأس المال بالعقود: ${companyData.capital}`,
         created_at: new Date().toISOString()
       };
 
-      // 1. Insert Company
+      // 1. Insert Company into DB with pending status
       const { error: compError } = await sb.from("companies").insert(companyPayload);
       if (compError) {
-        showToast("فشل في تسجيل الشركة بقاعدة البيانات!", "error");
+        showToast("فشل في تقديم طلب تسجيل الشركة بقاعدة البيانات!", "error");
         return false;
       }
 
-      // 2. Insert Default Admin for this Company
+      // 2. Insert Default Admin for this Company with pending status
       const defaultAdmin: AuthUser = {
         id: `admin_${companyData.slug}`,
         name: `مدير ${companyData.name}`,
@@ -618,8 +630,27 @@ export default function App() {
         password: companyData.adminPass,
         role: "admin",
         company_id: newCompanyId,
-        status: "نشط",
+        status: "بانتظار موافقة السوبر أدمن",
+        requested_company_name: companyData.name,
+        requested_company_slug: companyData.slug,
+        requested_company_manager: companyData.manager,
+        requested_company_phone: companyData.phone,
+        requested_company_capital: companyData.capital,
+        requested_company_address: companyData.address,
+        requested_company_record_no: companyData.record_no,
+        requested_company_tax_no: companyData.tax_no,
         perms: {
+          pos_cashier: true,
+          pos_inventory: true,
+          pos_purchases: true,
+          pos_suppliers: true,
+          pos_categories: true,
+          pos_barcode: true,
+          pos_products_add: true,
+          pos_products_edit: true,
+          pos_products_delete: true,
+          pos_settings: true,
+          attendance: true,
           installmentsView: true,
           installmentsAdd: true,
           installmentsEdit: true,
@@ -629,6 +660,7 @@ export default function App() {
           payments: true,
           expenses: true,
           treasury: true,
+          financial_reports: true,
           projects: true,
           workers: true,
           companies: true,
@@ -654,13 +686,59 @@ export default function App() {
         return false;
       }
 
-      showToast(`تم تأسيس وتسجيل ${companyData.name} بنجاح!`, "success");
       setCompanies(prev => [companyPayload, ...prev]);
-      navigateToSlug(companyData.slug);
+      setUsers(prev => [defaultAdmin, ...prev]);
+
+      showToast(`تم إرسال طلب تأسيس «${companyData.name}» إلى خانة السوبر أدمن بنجاح!`, "success");
       return true;
     } catch (err: any) {
       showToast(`فشل في تسجيل الشركة: ${err.message || err}`, "error");
       return false;
+    }
+  };
+
+  const handleApproveCompany = async (companyId: string) => {
+    try {
+      const target = companies.find(c => c.id === companyId);
+      if (!target) return;
+
+      const updateData: Partial<Company> = {
+        status: "نشط",
+        approval_date: new Date().toISOString(),
+        approved_by: currentUser?.name || "السوبر أدمن",
+      };
+
+      await sb.from("companies").update(updateData).eq("id", companyId);
+      await sb.from("users").update({ status: "نشط" }).eq("company_id", companyId);
+
+      setCompanies(prev => prev.map(c => c.id === companyId ? { ...c, ...updateData } : c));
+      setUsers(prev => prev.map(u => u.company_id === companyId ? { ...u, status: "نشط" } : u));
+
+      showToast(`👑 تم اعتماد وتفعيل شركة «${target.name}» رسمياً! المنظومة جاهزة للعمل.`, "success");
+    } catch (err: any) {
+      showToast(`فشل في اعتماد الشركة: ${err.message || err}`, "error");
+    }
+  };
+
+  const handleRejectCompany = async (companyId: string, reason?: string) => {
+    try {
+      const target = companies.find(c => c.id === companyId);
+      if (!target) return;
+
+      const updateData: Partial<Company> = {
+        status: "مرفوض",
+        rejection_reason: reason || "تم رفض الطلب بواسطة السوبر أدمن",
+      };
+
+      await sb.from("companies").update(updateData).eq("id", companyId);
+      await sb.from("users").update({ status: "مرفوض" }).eq("company_id", companyId);
+
+      setCompanies(prev => prev.map(c => c.id === companyId ? { ...c, ...updateData } : c));
+      setUsers(prev => prev.map(u => u.company_id === companyId ? { ...u, status: "مرفوض" } : u));
+
+      showToast(`تم رفض طلب تسجيل شركة «${target.name}».`, "info");
+    } catch (err: any) {
+      showToast(`فشل في رفض الطلب: ${err.message || err}`, "error");
     }
   };
 
@@ -1441,7 +1519,11 @@ export default function App() {
 
       // Strictly check account status
       if (matchedUser.status && matchedUser.status !== "نشط") {
-        showToast("⚠️ عذراً، هذا الحساب ملغى أو معطل حالياً من قبل الإدارة!", "error");
+        if (matchedUser.status === "بانتظار موافقة السوبر أدمن" || matchedUser.status === "pending") {
+          showToast("⏳ طلب تسجيل هذه المنشأة لا يزال في خانة السوبر أدمن بانتظار المراجعة والاعتماد.", "warning");
+        } else {
+          showToast("⚠️ عذراً، هذا الحساب ملغى أو معطل حالياً من قبل الإدارة!", "error");
+        }
         setIsLoading(false);
         return;
       }
@@ -8180,6 +8262,22 @@ body {
                     ))}
                   </select>
                 </div>
+              )}
+
+              {/* Super Admin Company Approvals Quick Notification Badge */}
+              {currentUser?.role === "admin" && companies.filter(c => c.status === "بانتظار موافقة السوبر أدمن" || c.status === "pending_approval").length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setActiveSection("companies")}
+                  className="animate-pulse flex items-center gap-1.5 bg-gradient-to-r from-amber-500/25 to-yellow-500/15 border-2 border-amber-500 hover:border-amber-400 text-amber-300 font-black text-xs px-3 py-1.5 rounded-xl shadow-lg shadow-amber-500/20 cursor-pointer transition-all"
+                  title="يوجد طلبات تسجيل شركات جديدة بانتظار موافقة السوبر أدمن"
+                >
+                  <span className="text-sm">👑</span>
+                  <span>خانة السوبر أدمن:</span>
+                  <span className="bg-amber-500 text-slate-950 px-2 py-0.2 rounded-full font-mono text-[11px] font-black">
+                    {companies.filter(c => c.status === "بانتظار موافقة السوبر أدمن" || c.status === "pending_approval").length} شركة بانتظار الاعتماد
+                  </span>
+                </button>
               )}
             </div>
             
