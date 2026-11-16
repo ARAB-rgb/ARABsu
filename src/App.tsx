@@ -4,7 +4,8 @@
  */
 
 import React, { useState, useEffect, useRef } from "react";
-import { GoogleAuthProvider, signInWithPopup } from "firebase/auth";
+import { GoogleAuthProvider, signInWithPopup, signOut } from "firebase/auth";
+import { doc, setDoc } from "firebase/firestore";
 import {
   Home, ClipboardList, FileText, Landmark, TrendingUp, TrendingDown, Briefcase, Users,
   Settings, LogOut, Calendar, MapPin, User, Phone, Shield, Search, Plus,
@@ -15,7 +16,7 @@ import {
 
 import { User as AuthUser, UserPerms, CASHIER_DEFAULT_PERMS, Installment, Quote, OfficialLetter, Receipt, Payment, Expense, Project, Worker, DbSession, Company, Extract, AttendanceRecord } from "./types";
 import {
-  sb, logSession, getContractTiming, awExtractRegion, awCleanNotes, awExtractAttachment,
+  sb, db, cleanPayload, logSession, getContractTiming, awExtractRegion, awCleanNotes, awExtractAttachment,
   awBuildNotesWithRegion, awBuildNotesWithRegionAndTreasury, awBuildNotesWithRegionAndTreasuryAndCapital, awExtractTreasury, awExtractCapital, generateNextNo,
   awExtractCapitalSource, awExtractCapitalCompany, awExtractCapitalCollection, awExtractCapitalSplit, awGetSafeCapitalOutflow,
   awExtractWorkerContract, awExtractWorkerLeaves, awBuildWorkerNotes, awCleanWorkerNotes,
@@ -40,7 +41,7 @@ import { ProjectMap } from "./components/ProjectMap";
 import { HRModule } from "./components/HRModule";
 import { SuperAdminCompanyApprovals } from "./components/SuperAdminCompanyApprovals";
 import { CompanyAssets } from "./components/CompanyAssets";
-import { AuthenticatorModal } from "./components/AuthenticatorModal";
+import { AuthenticatorModal, getAuthenticatorSecret, getTotpDetails } from "./components/AuthenticatorModal";
 import { NotFound404 } from "./components/NotFound404";
 import { SubcontractsManager } from "./components/SubcontractsManager";
 import { PosCashierModule } from "./components/PosCashierModule";
@@ -87,16 +88,225 @@ const isCompanyApprovedStatus = (status?: string | null): boolean =>
 const SUPER_ADMIN_CANONICAL_ID = "admin_1007363904";
 const SUPER_ADMIN_CANONICAL_CODE = "1007363904";
 const RESERVED_SUPER_ADMIN_CODES = ["1007363904", "0564468888", "139213", "13921313"];
+const LEGACY_SUPER_ADMIN_IDS = ["admin_0564468888", "admin_139213", "admin_13921313"];
+
+const isAccountSuperAdmin = (u?: Partial<AuthUser> | null): boolean => {
+  if (!u) return false;
+  if (u.id === SUPER_ADMIN_CANONICAL_ID || LEGACY_SUPER_ADMIN_IDS.includes(String(u.id || ""))) return true;
+  if (u.account_type === "super_admin") return true;
+  const cleanCode = normalizeDigits(String(u.code || "")).trim().toLowerCase();
+  if (cleanCode && RESERVED_SUPER_ADMIN_CODES.includes(cleanCode)) return true;
+  return false;
+};
 
 const isGlobalSuperAdmin = (u?: AuthUser | null): boolean => {
   if (!u || u.role !== "admin") return false;
-  if (u.account_type === "individual" || u.account_type === "company_manager") return false;
+  if (u.account_type === "individual" || u.account_type === "company_manager" || u.account_type === "maintenance_staff") return false;
   // السوبر أدمن يكون واحد فقط على مستوى المنصة بالكامل
   if (u.id === SUPER_ADMIN_CANONICAL_ID) return true;
   if (u.account_type === "super_admin" && normalizeDigits(u.code || "").trim() === SUPER_ADMIN_CANONICAL_CODE) {
     return true;
   }
   return false;
+};
+
+const isMaintenanceStaff = (u?: Partial<AuthUser> | null): boolean => {
+  if (!u) return false;
+  return u.account_type === "maintenance_staff" || u.role === "maintenance";
+};
+
+const isCompanyStrictPrivate = (c?: Partial<Company> | null): boolean => {
+  if (!c) return false;
+  if (c.privacy_mode === "strict_private") return true;
+  if (c.privacy_mode === "standard") return false;
+  return (
+    c.registration_source === "self_registered" ||
+    c.registration_source === "google_registered" ||
+    String(c.id || "").startsWith("company_")
+  );
+};
+
+const canAccessCompanyOperationalData = (c?: Partial<Company> | null, u?: AuthUser | null): boolean => {
+  if (!u || !c) return false;
+  if (isGlobalSuperAdmin(u)) {
+    if (isCompanyStrictPrivate(c) && c.maintenance_allowed !== true) return false;
+    return true;
+  }
+  if (isMaintenanceStaff(u)) {
+    return Boolean(
+      isCompanyApprovedStatus(c.status) &&
+      c.maintenance_allowed === true &&
+      c.assigned_maintenance_user_id === u.id
+    );
+  }
+  return false;
+};
+
+const EXTENDED_COMPANY_META_KEYS: (keyof Company)[] = [
+  "registration_source",
+  "privacy_mode",
+  "maintenance_allowed",
+  "maintenance_note",
+  "maintenance_enabled_at",
+  "maintenance_enabled_by",
+  "assigned_maintenance_user_id",
+  "assigned_maintenance_user_name",
+  "logo_url",
+  "letterhead_url",
+  "stamp_url",
+  "signature_url",
+  "quote_template",
+  "quote_primary_color",
+  "quote_accent_color",
+  "letterhead_template",
+  "letterhead_primary_color",
+  "letterhead_accent_color",
+  "entity_type",
+  "slug",
+  "treasuries",
+];
+
+const readExtendedCompanyMetaCache = (companyId: string): Partial<Company> => {
+  try {
+    const raw = localStorage.getItem(`aw_company_meta_${companyId}`);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const hydrateCompanyMeta = (c: Company): Company => {
+  if (!c || !c.id) return c;
+  const cached = readExtendedCompanyMetaCache(c.id);
+  const merged: any = { ...c };
+  for (const key of EXTENDED_COMPANY_META_KEYS) {
+    if (merged[key] === undefined && cached[key] !== undefined) {
+      merged[key] = cached[key];
+    }
+  }
+  return merged as Company;
+};
+
+const saveExtendedCompanyMeta = async (companyId: string, patch: Partial<Company>): Promise<void> => {
+  if (!companyId) return;
+  try {
+    const prev = readExtendedCompanyMetaCache(companyId);
+    const next = cleanPayload({ ...prev, ...patch, id: companyId });
+    localStorage.setItem(`aw_company_meta_${companyId}`, JSON.stringify(next));
+  } catch {}
+  try {
+    await setDoc(
+      doc(db, "companies", companyId),
+      cleanPayload({ id: companyId, ...patch }),
+      { merge: true }
+    );
+  } catch (e) {
+    console.warn("Extended company meta Firestore sync skipped:", e);
+  }
+};
+
+const buildSupabaseCoreCompanyRow = (data: Partial<Company>): any => {
+  const core: any = {};
+  if (data.id !== undefined) core.id = data.id;
+  if (data.name !== undefined) core.name = data.name;
+  if (data.commercial_register !== undefined) core.commercial_register = data.commercial_register;
+  else if (data.record_no !== undefined) core.commercial_register = data.record_no;
+  if (data.tax_no !== undefined) core.tax_no = data.tax_no;
+  if (data.capital !== undefined) core.capital = Number(data.capital || 0);
+  if (data.phone !== undefined) core.phone = data.phone;
+  if (data.address !== undefined) core.address = data.address;
+  if (data.status !== undefined) core.status = data.status;
+  if (data.created_at !== undefined) core.created_at = data.created_at;
+  return core;
+};
+
+// الصلاحيات الكاملة لمدير حساب الشركة / المؤسسة (داخل شركته فقط لا غير)
+const COMPANY_MANAGER_FULL_PERMS: UserPerms = {
+  region: "",
+  worker_id: null,
+  attendance: true,
+  dashboard: true,
+  pos: true,
+  pos_cashier: true,
+  pos_inventory: true,
+  pos_purchases: true,
+  pos_suppliers: true,
+  pos_categories: true,
+  pos_barcode: true,
+  pos_products_add: true,
+  pos_products_edit: true,
+  pos_products_delete: true,
+  pos_settings: true,
+  messages: true,
+  spreadsheets: true,
+  installmentsView: true,
+  installmentsAdd: true,
+  installmentsEdit: true,
+  installmentsDelete: true,
+  quotes: true,
+  letters: true,
+  receipts: true,
+  payments: true,
+  expenses: true,
+  treasury: true,
+  financial_reports: true,
+  projects: true,
+  workers: true,
+  companies: true,
+  users: true,
+  sessions: true,
+  print: true,
+  hr_employees_view: true,
+  hr_employees_add: true,
+  hr_employees_edit: true,
+  hr_employees_delete: true,
+  hr_contracts_view: true,
+  hr_contracts_add: true,
+  hr_contracts_approve: true,
+  hr_custody_view: true,
+  hr_custody_add: true,
+  hr_custody_return: true,
+  hr_drivers_view: true,
+  hr_drivers_add: true,
+  hr_drivers_delete: true,
+  hr_journals_add: true,
+  hr_journals_approve: true,
+  hr_journals_pay: true,
+  hr_deductions_add: true,
+  hr_deductions_approve: true,
+  hr_salaries_view: true,
+  hr_reports_print: true,
+  dashTopCards: true,
+  dashCollection: true,
+  dashPulse: true,
+  dashLateClients: true,
+  dashLastReceipts: true,
+  dashUpcomingPaid: true,
+};
+
+// الصلاحيات الكاملة لصاحب حساب الأفراد (داخل مساحة عمله الشخصية فقط لا غير)
+const INDIVIDUAL_FULL_PERMS: UserPerms = {
+  ...COMPANY_MANAGER_FULL_PERMS,
+  workers: false,
+  companies: false,
+  users: false,
+  sessions: false,
+  hr_employees_view: false,
+  hr_employees_add: false,
+  hr_employees_edit: false,
+  hr_employees_delete: false,
+  hr_contracts_view: false,
+  hr_contracts_add: false,
+  hr_contracts_approve: false,
+  hr_journals_add: false,
+  hr_journals_approve: false,
+  hr_journals_pay: false,
+  hr_deductions_add: false,
+  hr_deductions_approve: false,
+  hr_salaries_view: false,
+  hr_reports_print: false,
 };
 
 const compressAndResizeImage = (file: File, maxWidth = 800, maxHeight = 800, quality = 0.7): Promise<string> => {
@@ -509,7 +719,7 @@ function PendingUserApprovalCard({
           ) : (
             <div className="space-y-1">
               <span className="text-xs font-bold text-indigo-300">
-                🏢 طلب انضمام لشركة قائمة: <span className="text-white font-black">{companies.find(c => c.id === pendingUser.company_id)?.name || "شركة عرب وورلد"}</span>
+                🏢 طلب انضمام لشركة قائمة: <span className="text-white font-black">{companies.find(c => c.id === pendingUser.company_id)?.name || "المنشأة المحددة"}</span>
               </span>
               {pendingUser.role === "cashier" && (
                 <div className="text-[10px] text-amber-300 font-bold flex items-center gap-1 mt-1 bg-amber-500/10 border border-amber-500/25 px-2 py-0.5 rounded-lg w-fit">
@@ -696,17 +906,21 @@ export default function App() {
         email: `info@${cleanSlug}${companyData.domain_extension || ".com"}`,
         admin_code: companyData.adminCode,
         admin_pass: companyData.adminPass,
-        status: "بانتظار موافقة السوبر أدمن", // <--- Dedicated pending status
+        status: "بانتظار موافقة السوبر أدمن",
+        registration_source: "self_registered",
+        privacy_mode: "strict_private",
+        maintenance_allowed: false,
         notes: `${entityType} | الرقم الضريبي: ${companyData.tax_no} | رأس المال بالعقود: ${companyData.capital}`,
         created_at: new Date().toISOString()
       };
 
-      // 1. Insert Company into DB with pending status
-      const { error: compError } = await sb.from("companies").insert(companyPayload);
+      // 1. Insert Company into DB with pending status & save full extended privacy metadata
+      const { error: compError } = await sb.from("companies").insert(buildSupabaseCoreCompanyRow(companyPayload));
       if (compError) {
         showToast("فشل في تقديم طلب تسجيل المنشأة بقاعدة البيانات!", "error");
         return false;
       }
+      await saveExtendedCompanyMeta(newCompanyId, companyPayload);
 
       // 2. Insert General Manager (المدير العام للشركة / المؤسسة) for this entity with pending status
       const defaultAdmin: AuthUser = {
@@ -728,45 +942,9 @@ export default function App() {
         requested_company_record_no: companyData.record_no,
         requested_company_tax_no: companyData.tax_no,
         perms: {
-          pos: true,
-          pos_cashier: true,
-          pos_inventory: true,
-          pos_purchases: true,
-          pos_suppliers: true,
-          pos_categories: true,
-          pos_barcode: true,
-          pos_products_add: true,
-          pos_products_edit: true,
-          pos_products_delete: true,
-          pos_settings: true,
-          messages: true,
-          spreadsheets: true,
-          attendance: true,
-          dashboard: true,
-          installmentsView: true,
-          installmentsAdd: true,
-          installmentsEdit: true,
-          installmentsDelete: true,
-          quotes: true,
-          receipts: true,
-          payments: true,
-          expenses: true,
-          treasury: true,
-          financial_reports: true,
-          projects: true,
-          workers: true,
-          companies: true,
-          users: true,
-          sessions: true,
-          print: true,
-          dashTopCards: true,
-          dashCollection: true,
-          dashPulse: true,
-          dashLateClients: true,
-          dashLastReceipts: true,
-          dashUpcomingPaid: true,
+          ...COMPANY_MANAGER_FULL_PERMS,
           region: "",
-          worker_id: null
+          worker_id: null,
         },
         company_perms: {},
         created_at: new Date().toISOString()
@@ -804,13 +982,14 @@ export default function App() {
         approved_by: currentUser?.name || "السوبر أدمن",
       };
 
-      await sb.from("companies").update(updateData).eq("id", companyId);
+      await sb.from("companies").update({ status: "نشط" }).eq("id", companyId);
+      await saveExtendedCompanyMeta(companyId, updateData);
       await sb.from("users").update({ status: "نشط" }).eq("company_id", companyId);
 
       setCompanies(prev => prev.map(c => c.id === companyId ? { ...c, ...updateData } : c));
       setUsers(prev => prev.map(u => u.company_id === companyId ? { ...u, status: "نشط" } : u));
 
-      showToast(`👑 تم اعتماد وتفعيل شركة «${target.name}» رسمياً! المنظومة جاهزة للعمل.`, "success");
+      showToast(`👑 تم اعتماد وتفعيل شركة «${target.name}» رسمياً بوضع الخصوصية التامة!`, "success");
     } catch (err: any) {
       showToast(`فشل في اعتماد الشركة: ${err.message || err}`, "error");
     }
@@ -830,7 +1009,8 @@ export default function App() {
         rejection_reason: reason || "تم رفض الطلب بواسطة السوبر أدمن",
       };
 
-      await sb.from("companies").update(updateData).eq("id", companyId);
+      await sb.from("companies").update({ status: "مرفوض" }).eq("id", companyId);
+      await saveExtendedCompanyMeta(companyId, updateData);
       await sb.from("users").update({ status: "مرفوض" }).eq("company_id", companyId);
 
       setCompanies(prev => prev.map(c => c.id === companyId ? { ...c, ...updateData } : c));
@@ -951,16 +1131,20 @@ export default function App() {
           admin_code: normalizeDigits(userData.code).trim(),
           admin_pass: normalizeDigits(userData.password).trim(),
           status: "بانتظار موافقة السوبر أدمن",
+          registration_source: "self_registered",
+          privacy_mode: "strict_private",
+          maintenance_allowed: false,
           notes: `طلب تأسيس ${entityType} | رأس المال: ${userData.company_capital || 0} ر.س`,
           created_at: new Date().toISOString(),
         };
 
-        const { error: compErr } = await sb.from("companies").insert(newCompanyPayload);
+        const { error: compErr } = await sb.from("companies").insert(buildSupabaseCoreCompanyRow(newCompanyPayload));
         if (compErr) {
           console.error("Comp error:", compErr);
           showToast("حدث خطأ أثناء إرسال طلب تأسيس المنشأة!", "error");
           return { success: false, message: compErr.message };
         }
+        await saveExtendedCompanyMeta(finalCompId, newCompanyPayload);
 
         setCompanies((prev) => [newCompanyPayload, ...prev]);
       } else {
@@ -992,85 +1176,13 @@ export default function App() {
       let userPerms: UserPerms;
       if (isIndividual) {
         userPerms = {
-          attendance: true,
-          dashboard: true,
-          pos: true,
-          pos_cashier: true,
-          pos_inventory: true,
-          pos_purchases: true,
-          pos_suppliers: true,
-          pos_categories: true,
-          pos_barcode: true,
-          pos_products_add: true,
-          pos_products_edit: true,
-          pos_products_delete: true,
-          pos_settings: true,
-          messages: true,
-          installmentsView: true,
-          installmentsAdd: true,
-          installmentsEdit: true,
-          installmentsDelete: true,
-          quotes: true,
-          letters: true,
-          receipts: true,
-          payments: true,
-          expenses: true,
-          treasury: true,
-          financial_reports: true,
-          projects: true,
-          workers: false,
-          companies: false,
-          users: false,
-          sessions: false,
-          print: true,
-          dashTopCards: true,
-          dashCollection: true,
-          dashPulse: true,
-          dashLateClients: true,
-          dashLastReceipts: true,
-          dashUpcomingPaid: true,
+          ...INDIVIDUAL_FULL_PERMS,
           region: "",
           worker_id: null,
         };
       } else if (finalRole === "admin") {
         userPerms = {
-          attendance: true,
-          dashboard: true,
-          pos: true,
-          pos_cashier: true,
-          pos_inventory: true,
-          pos_purchases: true,
-          pos_suppliers: true,
-          pos_categories: true,
-          pos_barcode: true,
-          pos_products_add: true,
-          pos_products_edit: true,
-          pos_products_delete: true,
-          pos_settings: true,
-          messages: true,
-          installmentsView: true,
-          installmentsAdd: true,
-          installmentsEdit: true,
-          installmentsDelete: true,
-          quotes: true,
-          letters: true,
-          receipts: true,
-          payments: true,
-          expenses: true,
-          treasury: true,
-          financial_reports: true,
-          projects: true,
-          workers: true,
-          companies: true,
-          users: true,
-          sessions: true,
-          print: true,
-          dashTopCards: true,
-          dashCollection: true,
-          dashPulse: true,
-          dashLateClients: true,
-          dashLastReceipts: true,
-          dashUpcomingPaid: true,
+          ...COMPANY_MANAGER_FULL_PERMS,
           region: "",
           worker_id: null,
         };
@@ -1078,6 +1190,7 @@ export default function App() {
         userPerms = {
           ...CASHIER_DEFAULT_PERMS,
           messages: true,
+          spreadsheets: true,
           region: "",
           worker_id: null,
         };
@@ -1392,13 +1505,14 @@ export default function App() {
   const [letterSignatoryName, setLetterSignatoryName] = useState("م/ إدارة الشركة");
   const [letterSignatoryTitle, setLetterSignatoryTitle] = useState("المدير العام");
   const [letterAttachments, setLetterAttachments] = useState("");
-  const [letterCompanyId, setLetterCompanyId] = useState("arab_world");
+  const [letterCompanyId, setLetterCompanyId] = useState("");
   const [letterCompanyName, setLetterCompanyName] = useState("");
   const [letterStyle, setLetterStyle] = useState<"letterhead" | "standard">("letterhead");
   const [letterDate, setLetterDate] = useState(new Date().toISOString().slice(0, 10));
   const [letterSearch, setLetterSearch] = useState("");
   const [letterCompanyFilter, setLetterCompanyFilter] = useState("all");
   const [showLetterDesignPanel, setShowLetterDesignPanel] = useState<boolean>(false);
+  const [gmMaintenanceNotes, setGmMaintenanceNotes] = useState<Record<string, string>>({});
 
   // 2. Receipts Forms
   const [rContractQuery, setRContractQuery] = useState("");
@@ -1570,7 +1684,7 @@ export default function App() {
   const [uCode, setUCode] = useState("");
   const [uPass, setUPass] = useState("");
   const [uWorkerId, setUWorkerId] = useState("");
-  const [uRole, setURole] = useState<"admin" | "employee" | "supervisor" | "cashier">("employee");
+  const [uRole, setURole] = useState<"admin" | "employee" | "supervisor" | "cashier" | "maintenance">("employee");
   const [uCompanyId, setUCompanyId] = useState("");
   const [uRegion, setURegion] = useState("");
   const [uStatus, setUStatus] = useState("نشط");
@@ -1595,6 +1709,7 @@ export default function App() {
     installmentsEdit: false,
     installmentsDelete: false,
     quotes: false,
+    letters: false,
     receipts: false,
     payments: false,
     expenses: false,
@@ -1637,11 +1752,11 @@ export default function App() {
       const normCodeNoZero = normCode.replace(/^0+/, "");
 
       // Ensure companies are loaded so routing & company status checks work reliably
-      let currentCompanies = dedupeById<Company>(companies);
+      let currentCompanies = dedupeById<Company>(companies).map(hydrateCompanyMeta);
       if (currentCompanies.length === 0) {
         try {
           const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
-          currentCompanies = dedupeById<Company>(comp.data || []);
+          currentCompanies = dedupeById<Company>(comp.data || []).map(hydrateCompanyMeta);
           setCompanies(currentCompanies);
         } catch (compErr) {
           console.warn("Could not load companies during login:", compErr);
@@ -1656,10 +1771,10 @@ export default function App() {
       const usersList: AuthUser[] = (allUsers || []) as AuthUser[];
 
       const explicitSuperAdminCodes = ["1007363904", "0564468888", "139213", "13921313", "سلطان", "سلطان العاصمي", "sultan"];
-      const genericAdminAliases = ["الادمن", "admin", "المدير", "المدير العام"];
-      const adminPasses = ["1007363904", "0564468888", "139213", "13921313", "admin", "admin123"];
+      const adminPasses = ["1007363904", "0564468888", "139213", "13921313"];
 
       const candidates = usersList.filter((u: any) => {
+        if (isAccountSuperAdmin(u)) return false;
         const rawCode = normalizeDigits(u.code || "").trim().toLowerCase();
         const rawPhone = normalizeDigits(u.phone || "").trim().toLowerCase();
         const rawEmail = (u.email || "").trim().toLowerCase();
@@ -1684,7 +1799,7 @@ export default function App() {
       // Prefer candidate matching BOTH password and active company context (when multiple companies have same code like "admin" or "1001")
       const passMatchingCandidates = candidates.filter((u: any) => {
         const storedPass = normalizeDigits(String(u.password ?? "")).trim();
-        return !storedPass || storedPass === enteredPass;
+        return !!storedPass && storedPass === enteredPass;
       });
       const tenantSpecificMatch =
         (targetCompId ? passMatchingCandidates.find((u: any) => u.company_id === targetCompId) : undefined) ||
@@ -1697,15 +1812,7 @@ export default function App() {
           explicitSuperAdminCodes.includes(normCodeNoZero)) &&
         adminPasses.includes(enteredPass);
 
-      const isGenericSuperAdminAlias =
-        !tenantSpecificMatch &&
-        !targetCompId &&
-        (genericAdminAliases.includes(enteredCode) ||
-          genericAdminAliases.includes(enteredLower) ||
-          genericAdminAliases.includes(normCode)) &&
-        adminPasses.includes(enteredPass);
-
-      const isGlobalAdmin = isExplicitSuperAdmin || isGenericSuperAdminAlias;
+      const isGlobalAdmin = isExplicitSuperAdmin;
 
       if (isGlobalAdmin) {
         const adminName = "السوبر أدمن (مدير المنصة الوحيد)";
@@ -1715,33 +1822,14 @@ export default function App() {
           name: adminName,
           code: SUPER_ADMIN_CANONICAL_CODE,
           password: enteredPass,
+          email: "",
+          google_id: "",
           role: "admin",
           account_type: "super_admin",
           company_id: targetCompId,
           status: "نشط",
           perms: {
-            installmentsView: true,
-            installmentsAdd: true,
-            installmentsEdit: true,
-            installmentsDelete: true,
-            quotes: true,
-            receipts: true,
-            payments: true,
-            expenses: true,
-            treasury: true,
-            projects: true,
-            workers: true,
-            companies: true,
-            users: true,
-            sessions: true,
-            messages: true,
-            print: true,
-            dashTopCards: true,
-            dashCollection: true,
-            dashPulse: true,
-            dashLateClients: true,
-            dashLastReceipts: true,
-            dashUpcomingPaid: true,
+            ...COMPANY_MANAGER_FULL_PERMS,
             region: "",
             worker_id: null
           },
@@ -1755,13 +1843,19 @@ export default function App() {
           console.warn("Background admin DB sync skipped/failed:", dbErr);
         }
 
-        const matchedC = targetCompId
-          ? currentCompanies.find((c) => c.id === targetCompId || c.slug === targetCompId)
-          : (currentCompanies.find((c) => isCompanyApprovedStatus(c.status)) || currentCompanies[0] || undefined);
+        const accessibleForSuper = currentCompanies.filter((c) => canAccessCompanyOperationalData(c, defaultAdmin));
+        const requestedTarget = targetCompId
+          ? accessibleForSuper.find((c) => c.id === targetCompId || c.slug === targetCompId)
+          : undefined;
+        const matchedC = requestedTarget || accessibleForSuper[0] || undefined;
         if (matchedC) {
           defaultAdmin.company_id = matchedC.id;
           setSelectedCompanyId(matchedC.id);
           navigateToSlug(matchedC.slug || matchedC.id);
+        } else {
+          defaultAdmin.company_id = null;
+          setSelectedCompanyId("all");
+          navigateToSlug(null);
         }
 
         setCurrentUser(defaultAdmin);
@@ -1838,7 +1932,7 @@ export default function App() {
 
       // Strictly verify password
       const storedPass = normalizeDigits(String(matchedUser.password ?? "")).trim();
-      if (storedPass && storedPass !== enteredPass) {
+      if (!storedPass || storedPass !== enteredPass) {
         showToast("⚠️ كلمة المرور غير صحيحة!", "error");
         setIsLoading(false);
         return;
@@ -1862,10 +1956,23 @@ export default function App() {
         return;
       }
 
-      if (matchedUser.role === "cashier") {
+      if (isMaintenanceStaff(matchedUser)) {
+        matchedUser.perms = {
+          ...COMPANY_MANAGER_FULL_PERMS,
+          region: "",
+          worker_id: null,
+        };
+      } else if (matchedUser.role === "cashier") {
         matchedUser.perms = {
           ...CASHIER_DEFAULT_PERMS,
           ...(matchedUser.perms || {})
+        };
+      } else if (matchedUser.role === "admin" && !isAccountSuperAdmin(matchedUser)) {
+        const isIndivAccount = matchedUser.account_type === "individual" || String(matchedUser.company_id || "").startsWith("indiv_");
+        matchedUser.perms = {
+          ...(isIndivAccount ? INDIVIDUAL_FULL_PERMS : COMPANY_MANAGER_FULL_PERMS),
+          region: matchedUser.perms?.region || "",
+          worker_id: matchedUser.perms?.worker_id ?? null,
         };
       }
 
@@ -1873,11 +1980,31 @@ export default function App() {
 
       // Determine the company / personal workspace from the user's profile
       const isIndivUser = user.account_type === "individual" || String(user.company_id || "").startsWith("indiv_");
+      let loginSessionLabel = "تسجيل دخول للنظام المالي";
       if (isIndivUser) {
         const indivWsId = user.company_id || `indiv_${user.id}`;
         user.company_id = indivWsId;
         setSelectedCompanyId(indivWsId);
         navigateToSlug(null);
+      } else if (isMaintenanceStaff(user)) {
+        const allowedMaintComps = currentCompanies.filter(
+          (c) =>
+            isCompanyApprovedStatus(c.status) &&
+            c.maintenance_allowed === true &&
+            c.assigned_maintenance_user_id === user.id
+        );
+        if (allowedMaintComps.length === 0) {
+          showToast("🔒 الصيانة مغلقة أو لم يتم تخصيص أي شركة لك حالياً. يجب تفعيل خانة الصيانة من مدير الشركة أولاً.", "error");
+          setIsLoading(false);
+          return;
+        }
+        const preferredMaintComp =
+          (targetCompId ? allowedMaintComps.find((c) => c.id === targetCompId || c.slug === targetCompId) : undefined) ||
+          allowedMaintComps[0];
+        user.company_id = preferredMaintComp.id;
+        setSelectedCompanyId(preferredMaintComp.id);
+        navigateToSlug(preferredMaintComp.slug || preferredMaintComp.id);
+        loginSessionLabel = `🛠️ دخول موظف صيانة مخصّص (${user.name}) لمعالجة الأعطال في ${preferredMaintComp.name}`;
       } else {
         const compIdToUse = user.company_id || targetCompId;
         if (compIdToUse && compIdToUse !== "all") {
@@ -1904,7 +2031,7 @@ export default function App() {
           setSelectedCompanyId(matchedComp.id);
           navigateToSlug(matchedComp.slug || matchedComp.id);
         } else if (currentCompanies.length > 0 && !activeSlug && isGlobalSuperAdmin(user)) {
-          const fallbackComp = currentCompanies.find((c) => isCompanyApprovedStatus(c.status)) || currentCompanies[0];
+          const fallbackComp = currentCompanies.find((c) => canAccessCompanyOperationalData(c, user));
           if (fallbackComp) {
             setSelectedCompanyId(fallbackComp.id);
             navigateToSlug(fallbackComp.slug || fallbackComp.id);
@@ -1915,7 +2042,7 @@ export default function App() {
       setCurrentUser(user);
       localStorage.setItem("aw_current_user", JSON.stringify(user));
       showToast(`مرحباً بك مجدداً ${user.name}`);
-      await logSession(user, "تسجيل دخول للنظام المالي");
+      await logSession(user, loginSessionLabel);
       await loadEverything(user);
     } catch (err: any) {
       console.error(err);
@@ -1931,58 +2058,55 @@ export default function App() {
     try {
       const codeCandidate = normalizeDigits(inputCode || loginCode || "").trim();
       const totpCandidate = normalizeDigits(enteredTotp || "").trim();
+      const totpKey = codeCandidate || "1001";
+      const expectedTotp = getTotpDetails(getAuthenticatorSecret(totpKey)).code;
 
-      let currentCompanies = dedupeById<Company>(companies);
+      if (!totpCandidate || !/^\d{6}$/.test(totpCandidate) || totpCandidate !== expectedTotp) {
+        showToast("⚠️ رمز التحقق الثنائي (Authenticator 2FA) غير صحيح أو منتهي الصلاحية!", "error");
+        setIsLoading(false);
+        return;
+      }
+
+      let currentCompanies = dedupeById<Company>(companies).map(hydrateCompanyMeta);
       if (currentCompanies.length === 0) {
         try {
           const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
-          currentCompanies = dedupeById<Company>(comp.data || []);
+          currentCompanies = dedupeById<Company>(comp.data || []).map(hydrateCompanyMeta);
           setCompanies(currentCompanies);
         } catch (compErr) {
           console.warn("Could not load companies during 2FA login:", compErr);
         }
       }
 
-      const adminCodes = ["1007363904", "0564468888", "139213", "13921313", "سلطان العاصمي"];
+      const adminCodes = ["1007363904", "0564468888", "139213", "13921313", "سلطان", "سلطان العاصمي", "sultan"];
       const isGlobalAdmin =
         adminCodes.includes(codeCandidate) ||
+        adminCodes.includes(codeCandidate.toLowerCase()) ||
         adminCodes.includes(codeCandidate.replace(/[^0-9]/g, ""));
 
       const targetCompId = companyOverrideId || activeCompany?.id || null;
 
       if (isGlobalAdmin) {
+        const enteredPass = normalizeDigits(loginPass || "").trim();
+        if (!enteredPass || !RESERVED_SUPER_ADMIN_CODES.includes(enteredPass)) {
+          showToast("🛡️ لدخول السوبر أدمن عبر المصادقة الثنائية يجب إدخال كلمة مرور السوبر أدمن الصحيحة في حقل كلمة السر أولاً!", "error");
+          setIsLoading(false);
+          return;
+        }
+
         const defaultAdmin: AuthUser = {
           id: SUPER_ADMIN_CANONICAL_ID,
           name: "السوبر أدمن (مدير المنصة الوحيد)",
           code: SUPER_ADMIN_CANONICAL_CODE,
-          password: loginPass || "139213",
+          password: enteredPass,
+          email: "",
+          google_id: "",
           role: "admin",
           account_type: "super_admin",
           company_id: targetCompId,
           status: "نشط",
           perms: {
-            installmentsView: true,
-            installmentsAdd: true,
-            installmentsEdit: true,
-            installmentsDelete: true,
-            quotes: true,
-            receipts: true,
-            payments: true,
-            expenses: true,
-            treasury: true,
-            projects: true,
-            workers: true,
-            companies: true,
-            users: true,
-            sessions: true,
-            messages: true,
-            print: true,
-            dashTopCards: true,
-            dashCollection: true,
-            dashPulse: true,
-            dashLateClients: true,
-            dashLastReceipts: true,
-            dashUpcomingPaid: true,
+            ...COMPANY_MANAGER_FULL_PERMS,
             region: "",
             worker_id: null
           },
@@ -1990,13 +2114,19 @@ export default function App() {
           created_at: new Date().toISOString()
         };
 
-        const matchedC = targetCompId
-          ? currentCompanies.find((c) => c.id === targetCompId || c.slug === targetCompId)
-          : (currentCompanies.find((c) => isCompanyApprovedStatus(c.status)) || currentCompanies[0] || undefined);
+        const accessibleForSuper = currentCompanies.filter((c) => canAccessCompanyOperationalData(c, defaultAdmin));
+        const requestedTarget = targetCompId
+          ? accessibleForSuper.find((c) => c.id === targetCompId || c.slug === targetCompId)
+          : undefined;
+        const matchedC = requestedTarget || accessibleForSuper[0] || undefined;
         if (matchedC) {
           defaultAdmin.company_id = matchedC.id;
           setSelectedCompanyId(matchedC.id);
           navigateToSlug(matchedC.slug || matchedC.id);
+        } else {
+          defaultAdmin.company_id = null;
+          setSelectedCompanyId("all");
+          navigateToSlug(null);
         }
 
         setCurrentUser(defaultAdmin);
@@ -2008,14 +2138,15 @@ export default function App() {
         return;
       }
 
-      // Normal Employee / User direct login search
-      const effectiveCode = codeCandidate || totpCandidate || "1001";
+      // Normal Employee / User direct login search (strictly excludes Super Admin accounts)
+      const effectiveCode = codeCandidate || "1001";
       const effectiveLower = effectiveCode.toLowerCase();
       const normCode = effectiveCode.replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
       const normCodeNoZero = normCode.replace(/^0+/, "");
 
       const { data: allUsers } = await sb.from("users").select("*");
       const matchedUser = (allUsers || []).find((u: any) => {
+        if (isAccountSuperAdmin(u)) return false;
         const rawCode = normalizeDigits(u.code || "").trim().toLowerCase();
         const rawPhone = normalizeDigits(u.phone || "").trim().toLowerCase();
         const uCode = rawCode.replace(/[^0-9a-zA-Z]/g, "");
@@ -2056,11 +2187,45 @@ export default function App() {
       }
 
       const isIndivDirect = matchedUser.account_type === "individual" || String(matchedUser.company_id || "").startsWith("indiv_");
+      if (isMaintenanceStaff(matchedUser)) {
+        matchedUser.perms = {
+          ...COMPANY_MANAGER_FULL_PERMS,
+          region: "",
+          worker_id: null,
+        };
+      } else if (matchedUser.role === "admin") {
+        matchedUser.perms = {
+          ...(isIndivDirect ? INDIVIDUAL_FULL_PERMS : COMPANY_MANAGER_FULL_PERMS),
+          region: matchedUser.perms?.region || "",
+          worker_id: matchedUser.perms?.worker_id ?? null,
+        };
+      }
+
+      let directLoginSessionLabel = "تسجيل دخول مصدق - Authenticator 2FA";
       if (isIndivDirect) {
         const indivWsId = matchedUser.company_id || `indiv_${matchedUser.id}`;
         matchedUser.company_id = indivWsId;
         setSelectedCompanyId(indivWsId);
         navigateToSlug(null);
+      } else if (isMaintenanceStaff(matchedUser)) {
+        const allowedMaintComps = currentCompanies.filter(
+          (c) =>
+            isCompanyApprovedStatus(c.status) &&
+            c.maintenance_allowed === true &&
+            c.assigned_maintenance_user_id === matchedUser.id
+        );
+        if (allowedMaintComps.length === 0) {
+          showToast("🔒 الصيانة مغلقة أو لم يتم تخصيص أي شركة لك حالياً. يجب تفعيل خانة الصيانة من مدير الشركة أولاً.", "error");
+          setIsLoading(false);
+          return;
+        }
+        const preferredMaint =
+          (targetCompId ? allowedMaintComps.find((c) => c.id === targetCompId || c.slug === targetCompId) : undefined) ||
+          allowedMaintComps[0];
+        matchedUser.company_id = preferredMaint.id;
+        setSelectedCompanyId(preferredMaint.id);
+        navigateToSlug(preferredMaint.slug || preferredMaint.id);
+        directLoginSessionLabel = `🛠️ دخول موظف صيانة مخصّص (${matchedUser.name}) عبر 2FA لمعالجة ${preferredMaint.name}`;
       } else {
         const targetC = targetCompId
           ? currentCompanies.find((c) => c.id === targetCompId || c.slug === targetCompId)
@@ -2082,7 +2247,7 @@ export default function App() {
       setCurrentUser(matchedUser as AuthUser);
       localStorage.setItem("aw_current_user", JSON.stringify(matchedUser));
       showToast(`✅ تم تسجيل الدخول المباشر المصدق: ${matchedUser.name}`);
-      await logSession(matchedUser as AuthUser, "تسجيل دخول مصدق - Authenticator 2FA");
+      await logSession(matchedUser as AuthUser, directLoginSessionLabel);
       await loadEverything(matchedUser as AuthUser);
     } catch (err: any) {
       console.error("Direct 2FA login error:", err);
@@ -2095,26 +2260,50 @@ export default function App() {
   const handleGoogleSignIn = async () => {
     setIsLoading(true);
     try {
+      // Clear any stale Firebase Google session in this browser so account picker always prompts explicitly
+      if (auth.currentUser && !auth.currentUser.isAnonymous) {
+        await signOut(auth).catch(() => {});
+      }
       const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: "select_account" });
       const result = await signInWithPopup(auth, provider);
       const gUser = result.user;
-      if (!gUser.email) {
-        showToast("⚠️ عذراً، لم نتمكن من الحصول على البريد الإلكتروني من Google!", "error");
+      if (!gUser.email || gUser.emailVerified === false) {
+        showToast("⚠️ عذراً، يجب التحقق من بريد Google الإلكتروني الرسمي أولاً!", "error");
         setIsLoading(false);
         return;
       }
 
-      // Check if there is an existing user linked to this Google account (either by email or google_id)
+      // Query users across DB while STRICTLY blocking Super Admin accounts from ever authenticating via Google
       const { data: allUsers } = await sb.from("users").select("*");
       const usersList: AuthUser[] = (allUsers || []) as AuthUser[];
       const gEmailLower = gUser.email.trim().toLowerCase();
-      let existingUser =
-        usersList.find((u: any) => (u.email || "").trim().toLowerCase() === gEmailLower) ||
-        usersList.find((u: any) => u.google_id && u.google_id === gUser.uid) ||
+
+      // Security self-heal: strip any previously leaked email/google_id on Super Admin records without altering any company or treasury data
+      const taintedSuperAdmins = usersList.filter(
+        (u: any) =>
+          isAccountSuperAdmin(u) &&
+          (((u.email || "").trim().toLowerCase() === gEmailLower) || (u.google_id && u.google_id === gUser.uid) || Boolean(u.email) || Boolean(u.google_id))
+      );
+      for (const sUser of taintedSuperAdmins) {
+        if (sUser.id) {
+          await sb.from("users").update({ email: "", google_id: "" }).eq("id", sUser.id);
+        }
+      }
+
+      const regularUsersList = usersList.filter((u: any) => !isAccountSuperAdmin(u));
+      const existingUser =
+        regularUsersList.find((u: any) => u.google_id && u.google_id === gUser.uid) ||
+        regularUsersList.find((u: any) => (u.email || "").trim().toLowerCase() === gEmailLower) ||
         null;
 
       if (existingUser) {
         const user: AuthUser = existingUser as AuthUser;
+        if (isAccountSuperAdmin(user)) {
+          showToast("🛡️ محظور أمنياً: لا يمكن الدخول لحساب السوبر أدمن عبر Google مطلقاً!", "error");
+          setIsLoading(false);
+          return;
+        }
         if (
           user.status === "بانتظار موافقة السوبر أدمن" ||
           user.status === "بانتظار الاعتماد" ||
@@ -2137,6 +2326,21 @@ export default function App() {
         }
 
         const isIndivUser = user.account_type === "individual" || String(user.company_id || "").startsWith("indiv_");
+        if (isMaintenanceStaff(user)) {
+          user.perms = {
+            ...COMPANY_MANAGER_FULL_PERMS,
+            region: "",
+            worker_id: null,
+          };
+        } else if (user.role === "admin") {
+          user.perms = {
+            ...(isIndivUser ? INDIVIDUAL_FULL_PERMS : COMPANY_MANAGER_FULL_PERMS),
+            region: user.perms?.region || "",
+            worker_id: user.perms?.worker_id ?? null,
+          };
+        }
+
+        let googleSessionLabel = "تسجيل دخول بالنظام المالي (Google)";
         if (isIndivUser) {
           const indivWsId = user.company_id || `indiv_${user.id}`;
           user.company_id = indivWsId;
@@ -2144,52 +2348,74 @@ export default function App() {
           navigateToSlug(null);
         } else {
           // Ensure we have loaded companies
-          let currentCompanies = dedupeById<Company>(companies);
+          let currentCompanies = dedupeById<Company>(companies).map(hydrateCompanyMeta);
           if (currentCompanies.length === 0) {
             try {
               const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
-              currentCompanies = dedupeById<Company>(comp.data || []);
+              currentCompanies = dedupeById<Company>(comp.data || []).map(hydrateCompanyMeta);
               setCompanies(currentCompanies);
             } catch (compErr) {
               console.warn("Could not load companies during Google login:", compErr);
             }
           }
 
-          const targetC = user.company_id && user.company_id !== "all"
-            ? (currentCompanies.find((c) => c.id === user.company_id || c.slug === user.company_id) || undefined)
-            : (isGlobalSuperAdmin(user) ? (currentCompanies.find((c) => isCompanyApprovedStatus(c.status)) || currentCompanies[0] || undefined) : undefined);
-
-          if (targetC && !isCompanyApprovedStatus(targetC.status)) {
-            showToast(
-              targetC.status === "مرفوض"
-                ? "❌ تم رفض طلب تسجيل هذه الشركة من قبل السوبر أدمن."
-                : "⏳ طلب تأسيس الشركة المرتبط بحسابك لا يزال بانتظار موافقة السوبر أدمن.",
-              targetC.status === "مرفوض" ? "error" : "info"
+          if (isMaintenanceStaff(user)) {
+            const allowedMaintComps = currentCompanies.filter(
+              (c) =>
+                isCompanyApprovedStatus(c.status) &&
+                c.maintenance_allowed === true &&
+                c.assigned_maintenance_user_id === user.id
             );
-            setIsLoading(false);
-            return;
-          }
+            if (allowedMaintComps.length === 0) {
+              showToast("🔒 الصيانة مغلقة أو لم يتم تخصيص أي شركة لك حالياً.", "error");
+              setIsLoading(false);
+              return;
+            }
+            user.company_id = allowedMaintComps[0].id;
+            setSelectedCompanyId(allowedMaintComps[0].id);
+            navigateToSlug(allowedMaintComps[0].slug || allowedMaintComps[0].id);
+            googleSessionLabel = `🛠️ دخول موظف صيانة مخصّص (${user.name}) عبر Google لمعالجة ${allowedMaintComps[0].name}`;
+          } else {
+            const targetC = user.company_id && user.company_id !== "all"
+              ? (currentCompanies.find((c) => c.id === user.company_id || c.slug === user.company_id) || undefined)
+              : undefined;
 
-          if (targetC) {
+            if (!targetC) {
+              showToast("⚠️ هذا الحساب غير مرتبط بمنشأة معتمدة! يرجى التواصل مع إدارة شركتك.", "error");
+              setIsLoading(false);
+              return;
+            }
+
+            if (!isCompanyApprovedStatus(targetC.status)) {
+              showToast(
+                targetC.status === "مرفوض"
+                  ? "❌ تم رفض طلب تسجيل هذه الشركة من قبل السوبر أدمن."
+                  : "⏳ طلب تأسيس الشركة المرتبط بحسابك لا يزال بانتظار موافقة السوبر أدمن.",
+                targetC.status === "مرفوض" ? "error" : "info"
+              );
+              setIsLoading(false);
+              return;
+            }
+
             setSelectedCompanyId(targetC.id);
             navigateToSlug(targetC.slug || targetC.id);
           }
         }
 
-        // Successfully logged in directly because they are active & linked!
+        // Successfully logged in directly to user's own company or personal account!
         setCurrentUser(user);
         localStorage.setItem("aw_current_user", JSON.stringify(user));
         showToast(`مرحباً بك مجدداً ${user.name} (تم الدخول عبر Google)`);
-        await logSession(user, "تسجيل دخول بالنظام المالي (Google)");
+        await logSession(user, googleSessionLabel);
         await loadEverything(user);
       } else {
-        // Not registered/linked yet!
+        // Not registered/linked yet (and never allowed to touch Super Admin)
         setGoogleUser({
           email: gUser.email,
           uid: gUser.uid,
           displayName: gUser.displayName || undefined,
         });
-        showToast("✓ تم التحقق من حساب Google بنجاح! يرجى إكمال تسجيل بياناتك وطلب منشأتك.", "info");
+        showToast("✓ تم التحقق من حساب Google بنجاح! يرجى إكمال تسجيل حساب شركة أو أفراد.", "info");
       }
     } catch (err: any) {
       console.error(err);
@@ -2219,34 +2445,30 @@ export default function App() {
       const enteredPass = normalizeDigits(loginPass).trim();
       const enteredLower = enteredCode.toLowerCase();
 
-      const adminCodes = ["1007363904", "0564468888", "139213", "13921313", "الادمن", "admin", "المدير", "المدير العام", "سلطان العاصمي"];
-      const adminPasses = ["1007363904", "139213", "13921313"];
-      const isGlobalAdmin = (adminCodes.includes(enteredCode) || adminCodes.includes(enteredCode.replace(/[^0-9]/g, ""))) && adminPasses.includes(enteredPass);
+      const forbiddenSuperCodes = [...RESERVED_SUPER_ADMIN_CODES, "سلطان", "سلطان العاصمي", "sultan"];
+      if (
+        forbiddenSuperCodes.includes(enteredCode) ||
+        forbiddenSuperCodes.includes(enteredLower) ||
+        forbiddenSuperCodes.includes(enteredCode.replace(/[^0-9]/g, ""))
+      ) {
+        showToast("🛡️ محظور أمنياً: لا يمكن ربط حساب السوبر أدمن ببريد Google نهائياً!", "error");
+        setIsLoading(false);
+        return;
+      }
 
       let matchedComp: Company | undefined = undefined;
 
-      // Check if global admin and auto-update password in DB if it's correct but old
-      if (isGlobalAdmin) {
-        const { data: adminInDb } = await sb
-          .from("users")
-          .select("*")
-          .eq("code", "1007363904")
-          .maybeSingle();
-        if (adminInDb && adminInDb.password !== enteredPass) {
-          await sb.from("users").update({ password: enteredPass }).eq("id", adminInDb.id);
-        }
-      }
-
-      // Query all users and match reliably across Supabase & Firestore
+      // Query all users and match ONLY non-Super-Admin users with non-empty verified password
       const { data: allUsers } = await sb.from("users").select("*");
       const data = (allUsers || []).find((u: any) => {
+        if (isAccountSuperAdmin(u)) return false;
         const uCode = normalizeDigits(u.code || "").trim().toLowerCase();
         const uPass = normalizeDigits(String(u.password ?? "")).trim();
-        return uCode === enteredLower && uPass === enteredPass;
+        return uCode === enteredLower && !!uPass && uPass === enteredPass;
       });
 
-      if (!data) {
-        showToast("⚠️ عذراً، بيانات تصريح الدخول غير صحيحة!", "error");
+      if (!data || isAccountSuperAdmin(data)) {
+        showToast("⚠️ عذراً، بيانات تصريح الدخول غير صحيحة أو غير مسموح بربطها بـ Google!", "error");
         setIsLoading(false);
         return;
       }
@@ -2280,29 +2502,29 @@ export default function App() {
         setSelectedCompanyId(indivWsId);
         navigateToSlug(null);
       } else {
-        if (!isGlobalAdmin) {
-          if (user.company_id && user.company_id !== "all") {
-            matchedComp = currentCompanies.find(
-              (c) =>
-                c.id === user.company_id ||
-                (c.slug || "") === user.company_id
-            );
-            if (matchedComp && !isCompanyApprovedStatus(matchedComp.status)) {
-              showToast("⏳ طلب تسجيل هذه المنشأة لا يزال بانتظار موافقة السوبر أدمن.", "info");
-              setIsLoading(false);
-              return;
-            }
+        if (user.company_id && user.company_id !== "all") {
+          matchedComp = currentCompanies.find(
+            (c) =>
+              c.id === user.company_id ||
+              (c.slug || "") === user.company_id
+          );
+          if (matchedComp && !isCompanyApprovedStatus(matchedComp.status)) {
+            showToast("⏳ طلب تسجيل هذه المنشأة لا يزال بانتظار موافقة السوبر أدمن.", "info");
+            setIsLoading(false);
+            return;
           }
         }
-
-        // Auto-detect and route to user's company context
-        if (matchedComp) {
-          setSelectedCompanyId(matchedComp.id);
-          navigateToSlug(matchedComp.slug || matchedComp.id);
+        if (!matchedComp) {
+          showToast("⚠️ لا يمكن ربط هذا الحساب لأنه غير مرتبط بمنشأة معتمدة!", "error");
+          setIsLoading(false);
+          return;
         }
+
+        setSelectedCompanyId(matchedComp.id);
+        navigateToSlug(matchedComp.slug || matchedComp.id);
       }
 
-      // Safe update - ONLY updating the Google credentials on the user record, without touching any other user data!
+      // Safe update - ONLY updating the Google credentials on the non-super-admin user record!
       await sb.from("users").update({
         email: googleUser.email,
         google_id: googleUser.uid
@@ -2313,6 +2535,9 @@ export default function App() {
         ...user,
         email: googleUser.email,
         google_id: googleUser.uid,
+        perms: user.role === "admin"
+          ? { ...(isIndivLink ? INDIVIDUAL_FULL_PERMS : COMPANY_MANAGER_FULL_PERMS), region: user.perms?.region || "", worker_id: user.perms?.worker_id ?? null }
+          : user.perms,
       };
 
       setCurrentUser(linkedUser);
@@ -2399,14 +2624,18 @@ export default function App() {
           website: `https://${pendingSlug}.com`,
           email: data.email || `info@${pendingSlug}.com`,
           status: "بانتظار موافقة السوبر أدمن",
+          registration_source: data.google_id ? "google_registered" : "self_registered",
+          privacy_mode: "strict_private",
+          maintenance_allowed: false,
           notes: `طلب تأسيس ${entityType} عبر Google | رأس المال: ${data.requested_company_capital || 0} ر.س`,
           created_at: new Date().toISOString(),
         };
 
-        const { error: compErr } = await sb.from("companies").insert(pendingCompanyPayload);
+        const { error: compErr } = await sb.from("companies").insert(buildSupabaseCoreCompanyRow(pendingCompanyPayload));
         if (compErr) {
           throw compErr;
         }
+        await saveExtendedCompanyMeta(targetCompId, pendingCompanyPayload);
         setCompanies((prev) => [pendingCompanyPayload, ...prev]);
       } else {
         const joinKey = (data.join_company_slug || data.company_id || "").trim().toLowerCase();
@@ -2437,82 +2666,54 @@ export default function App() {
 
       const assignedPerms: UserPerms = isIndividual
         ? {
-            attendance: true,
-            dashboard: true,
-            pos: true,
-            pos_cashier: true,
-            pos_inventory: true,
-            pos_purchases: true,
-            pos_suppliers: true,
-            pos_categories: true,
-            pos_barcode: true,
-            pos_products_add: true,
-            pos_products_edit: true,
-            pos_products_delete: true,
-            pos_settings: true,
-            messages: true,
-            installmentsView: true,
-            installmentsAdd: true,
-            installmentsEdit: true,
-            installmentsDelete: true,
-            quotes: true,
-            letters: true,
-            receipts: true,
-            payments: true,
-            expenses: true,
-            treasury: true,
-            financial_reports: true,
-            projects: true,
-            workers: false,
-            companies: false,
-            users: false,
-            sessions: false,
-            print: true,
-            dashTopCards: true,
-            dashCollection: true,
-            dashPulse: true,
-            dashLateClients: true,
-            dashLastReceipts: true,
-            dashUpcomingPaid: true,
+            ...INDIVIDUAL_FULL_PERMS,
             region: "",
             worker_id: null,
           }
-        : assignedRole === "cashier"
+        : assignedRole === "admin"
           ? {
-              ...CASHIER_DEFAULT_PERMS,
-              messages: true,
+              ...COMPANY_MANAGER_FULL_PERMS,
               region: "",
               worker_id: null,
             }
-          : {
-              attendance: true,
-              dashboard: true,
-              messages: true,
-              installmentsView: true,
-              installmentsAdd: true,
-              installmentsEdit: assignedRole === "admin",
-              installmentsDelete: assignedRole === "admin",
-              quotes: true,
-              receipts: true,
-              payments: true,
-              expenses: true,
-              treasury: assignedRole === "admin",
-              financial_reports: assignedRole === "admin",
-              projects: true,
-              workers: true,
-              companies: assignedRole === "admin",
-              users: assignedRole === "admin",
-              sessions: false,
-              print: true,
-              dashTopCards: true,
-              dashCollection: true,
-              dashPulse: true,
-              dashLateClients: true,
-              dashLastReceipts: true,
-              dashUpcomingPaid: true,
-              region: "",
-              worker_id: null,
-            };
+          : assignedRole === "cashier"
+            ? {
+                ...CASHIER_DEFAULT_PERMS,
+                messages: true,
+                spreadsheets: true,
+                region: "",
+                worker_id: null,
+              }
+            : {
+                attendance: true,
+                dashboard: true,
+                messages: true,
+                spreadsheets: true,
+                installmentsView: true,
+                installmentsAdd: true,
+                installmentsEdit: false,
+                installmentsDelete: false,
+                quotes: true,
+                receipts: true,
+                payments: true,
+                expenses: true,
+                treasury: false,
+                financial_reports: false,
+                projects: true,
+                workers: true,
+                companies: false,
+                users: false,
+                sessions: false,
+                print: true,
+                dashTopCards: true,
+                dashCollection: true,
+                dashPulse: true,
+                dashLateClients: true,
+                dashLastReceipts: true,
+                dashUpcomingPaid: true,
+                region: "",
+                worker_id: null,
+              };
 
       const newUserPayload: AuthUser = {
         id: newUserId,
@@ -2615,16 +2816,20 @@ export default function App() {
             manager: targetUser.requested_company_manager || targetUser.name,
             phone: targetUser.requested_company_phone || targetUser.phone || "",
             status: "نشط",
+            registration_source: targetUser.google_id ? "google_registered" : "self_registered",
+            privacy_mode: "strict_private",
+            maintenance_allowed: false,
             approval_date: new Date().toISOString(),
             approved_by: currentUser?.name || "السوبر أدمن",
             notes: `تم التأسيس والاعتماد من طلب التسجيل السحابي | رأس المال: ${targetUser.requested_company_capital || 0} ر.س`,
             created_at: new Date().toISOString()
           };
 
-          const { error: compErr } = await sb.from("companies").insert(companyPayload);
+          const { error: compErr } = await sb.from("companies").insert(buildSupabaseCoreCompanyRow(companyPayload));
           if (compErr) {
             console.error("Comp creation error:", compErr);
           }
+          await saveExtendedCompanyMeta(newCompId, companyPayload);
           setCompanies(prev => [companyPayload, ...prev]);
         } else if (!isCompanyApprovedStatus(existingComp.status)) {
           const approveData: Partial<Company> = {
@@ -2632,7 +2837,8 @@ export default function App() {
             approval_date: new Date().toISOString(),
             approved_by: currentUser?.name || "السوبر أدمن",
           };
-          await sb.from("companies").update(approveData).eq("id", existingComp.id);
+          await sb.from("companies").update({ status: "نشط" }).eq("id", existingComp.id);
+          await saveExtendedCompanyMeta(existingComp.id, approveData);
           setCompanies(prev => prev.map(c => c.id === existingComp.id ? { ...c, ...approveData } : c));
         }
         finalCompId = existingComp?.id || newCompId;
@@ -2648,19 +2854,35 @@ export default function App() {
             approval_date: new Date().toISOString(),
             approved_by: currentUser?.name || "السوبر أدمن",
           };
-          await sb.from("companies").update(approveData).eq("id", chosenComp.id);
+          await sb.from("companies").update({ status: "نشط" }).eq("id", chosenComp.id);
+          await saveExtendedCompanyMeta(chosenComp.id, approveData);
           setCompanies(prev => prev.map(c => c.id === chosenComp.id ? { ...c, ...approveData } : c));
         }
       }
 
+      // Enforce tenant isolation when non-Super-Admin approves a user
+      if (!isGlobalSuperAdmin(currentUser)) {
+        if (targetUser.requested_company_name || !finalCompId || !isCompanyAuthorized(finalCompId)) {
+          showToast("⚠️ لا تملك صلاحية اعتماد هذا المستخدم خارج نطاق منشأتك!", "error");
+          return;
+        }
+      }
+
       // 2. Default permissions if not passed
-      const permsToSet = chosenPerms || (chosenRole === "cashier" ? CASHIER_DEFAULT_PERMS : targetUser.perms);
+      const permsToSet =
+        chosenPerms ||
+        (chosenRole === "admin"
+          ? { ...COMPANY_MANAGER_FULL_PERMS, region: targetUser.perms?.region || "", worker_id: targetUser.perms?.worker_id ?? null }
+          : chosenRole === "cashier"
+            ? { ...CASHIER_DEFAULT_PERMS, messages: true, spreadsheets: true }
+            : targetUser.perms);
 
       // 3. Update user in DB
       const updatedUserFields = {
         status: "نشط",
         company_id: finalCompId || null,
         role: chosenRole,
+        account_type: chosenRole === "admin" ? ("company_manager" as const) : targetUser.account_type,
         perms: permsToSet,
         updated_at: new Date().toISOString(),
       };
@@ -2704,9 +2926,13 @@ export default function App() {
   const handleLogout = () => {
     const userToLog = currentUser;
     setCurrentUser(null);
+    setGoogleUser(null);
     localStorage.removeItem("aw_current_user");
     localStorage.removeItem("aw_saved_employee_code");
     localStorage.removeItem("aw_saved_employee_name");
+    if (auth.currentUser && !auth.currentUser.isAnonymous) {
+      signOut(auth).catch(() => {});
+    }
     showToast("تم تسجيل الخروج بنجاح", "info");
 
     if (userToLog) {
@@ -3120,7 +3346,8 @@ export default function App() {
         const freshComp = await sb.from("companies").select("*").order("created_at", { ascending: false });
         compList = freshComp.data || compList;
       }
-      setCompanies(compList);
+      const hydratedCompanies = (compList || []).map(hydrateCompanyMeta);
+      setCompanies(hydratedCompanies);
       setExtracts(ext.data || []);
 
       // Preserve all registered users exactly as they exist in the database without altering records
@@ -3168,9 +3395,47 @@ export default function App() {
             return;
           }
 
+          // Maintenance Staff real-time revocation check when GM closes maintenance gate or removes assignment
+          if (isMaintenanceStaff(freshUser)) {
+            const allowedNow = hydratedCompanies.filter(
+              (c) =>
+                isCompanyApprovedStatus(c.status) &&
+                c.maintenance_allowed === true &&
+                c.assigned_maintenance_user_id === freshUser.id
+            );
+            if (allowedNow.length === 0) {
+              setCurrentUser(null);
+              localStorage.removeItem("aw_current_user");
+              navigateToSlug(null);
+              showToast("🔒 تم إغلاق خانة الصيانة أو إلغاء التخصيص من مدير الشركة. تم إنهاء الجلسة تلقائياً.", "info");
+              return;
+            }
+          }
+
           // Dynamically synchronize permissions and user info in real-time without terminating active session
-          setCurrentUser(freshUser);
-          localStorage.setItem("aw_current_user", JSON.stringify(freshUser));
+          const hydratedFreshUser: AuthUser = isMaintenanceStaff(freshUser)
+            ? {
+                ...freshUser,
+                perms: {
+                  ...COMPANY_MANAGER_FULL_PERMS,
+                  region: "",
+                  worker_id: null,
+                },
+              }
+            : freshUser.role === "admin" && !isAccountSuperAdmin(freshUser)
+              ? {
+                  ...freshUser,
+                  perms: {
+                    ...(freshUser.account_type === "individual" || String(freshUser.company_id || "").startsWith("indiv_")
+                      ? INDIVIDUAL_FULL_PERMS
+                      : COMPANY_MANAGER_FULL_PERMS),
+                    region: freshUser.perms?.region || "",
+                    worker_id: freshUser.perms?.worker_id ?? null,
+                  },
+                }
+              : freshUser;
+          setCurrentUser(hydratedFreshUser);
+          localStorage.setItem("aw_current_user", JSON.stringify(hydratedFreshUser));
         } else if (!overrideUser) {
           // Only sign out on background sync (not immediately during initial login before DB catches up)
           setCurrentUser(null);
@@ -3257,20 +3522,27 @@ export default function App() {
         sb.from("sessions").select("*"),
       ]);
 
+      const filterByPrivacy = (arr: any[]) =>
+        (arr || []).filter((item: any) => isCompanyAuthorized(item?.company_id));
+
       const backupData = {
         backup_version: "1.0",
         backed_up_at: new Date().toISOString(),
         active_database: isSupabaseHealthy ? "Supabase" : "Firestore",
         data: {
-          users: u.data || [],
-          installments: inst.data || [],
-          quotes: q.data || [],
-          receipts: rec.data || [],
-          payments: pay.data || [],
-          expenses: exp.data || [],
-          projects: pr.data || [],
-          workers: w.data || [],
-          sessions: s.data || []
+          users: (u.data || []).filter((usr: any) =>
+            isGlobalSuperAdmin(currentUser)
+              ? isMaintenanceStaff(usr) || isAccountSuperAdmin(usr) || isCompanyAuthorized(usr.company_id)
+              : isCompanyAuthorized(usr.company_id)
+          ),
+          installments: filterByPrivacy(inst.data || []),
+          quotes: filterByPrivacy(q.data || []),
+          receipts: filterByPrivacy(rec.data || []),
+          payments: filterByPrivacy(pay.data || []),
+          expenses: filterByPrivacy(exp.data || []),
+          projects: filterByPrivacy(pr.data || []),
+          workers: filterByPrivacy(w.data || []),
+          sessions: filterByPrivacy(s.data || []),
         }
       };
 
@@ -3395,9 +3667,15 @@ export default function App() {
         const isImmortalAdmin = isGlobalSuperAdmin(currentUser);
 
         if (isImmortalAdmin) {
+          // Ensure Super Admin session never stores a Google email/google_id linkage
+          const cleanSuperUser: AuthUser = { ...currentUser, email: "", google_id: "" };
+          if (currentUser.email || currentUser.google_id) {
+            setCurrentUser(cleanSuperUser);
+            localStorage.setItem("aw_current_user", JSON.stringify(cleanSuperUser));
+          }
           // Sync with DB in the background without blocking or kicking the admin out
           try {
-            await sb.from("users").upsert(currentUser, { onConflict: "id" });
+            await sb.from("users").upsert(cleanSuperUser, { onConflict: "id" });
           } catch (e) {
             console.warn("Admin background sync skipped/failed:", e);
           }
@@ -3477,7 +3755,7 @@ export default function App() {
           const freshComp = await sb.from("companies").select("*").order("created_at", { ascending: false });
           compList = freshComp.data || [];
         }
-        setCompanies(compList);
+        setCompanies(compList.map(hydrateCompanyMeta));
       } catch (err) {
         console.error("Failed to fetch initial companies for SaaS:", err);
       } finally {
@@ -3494,16 +3772,26 @@ export default function App() {
         (c) => (c.slug || "").toLowerCase() === activeSlug.toLowerCase() || c.id.toLowerCase() === activeSlug.toLowerCase()
       );
       if (activeComp) {
-        setSelectedCompanyId(activeComp.id);
+        if (!currentUser || isCompanyAuthorized(activeComp.id)) {
+          setSelectedCompanyId(activeComp.id);
+        }
       }
     }
-  }, [activeSlug, companies]);
+  }, [activeSlug, companies, currentUser]);
 
   const getAuthorizedCompanies = (): Company[] => {
     if (!currentUser) return [];
-    const uniqueCompanies = dedupeById<Company>(companies);
-    // فقط السوبر أدمن الوحيد يرى جميع الشركات المسجلة والمعلقة في المنصة
-    if (isGlobalSuperAdmin(currentUser)) return uniqueCompanies;
+    const uniqueCompanies = dedupeById<Company>(companies).map(hydrateCompanyMeta);
+
+    // السوبر أدمن يرى الشركات التشغيلية فقط إذا كانت في الوضع القياسي أو إذا فعّل مديرها خانة الصيانة
+    if (isGlobalSuperAdmin(currentUser)) {
+      return uniqueCompanies.filter((c) => canAccessCompanyOperationalData(c, currentUser));
+    }
+
+    // موظف الصيانة المخصّص لا يرى إلا الشركات التي فتحت خانة الصيانة ومُسنَدة له بالاسم
+    if (isMaintenanceStaff(currentUser)) {
+      return uniqueCompanies.filter((c) => canAccessCompanyOperationalData(c, currentUser));
+    }
 
     // حسابات الأفراد معزولة تماماً ولا ترى أي شركات مسجلة
     if (currentUser.account_type === "individual" || String(currentUser.company_id || "").startsWith("indiv_")) {
@@ -3541,8 +3829,17 @@ export default function App() {
 
   const isCompanyAuthorized = (compId: string | undefined | null) => {
     if (!currentUser) return false;
-    if (isGlobalSuperAdmin(currentUser)) return true;
     const targetId = compId || "arab_world";
+    if (isGlobalSuperAdmin(currentUser)) {
+      const targetComp = companies.find((c) => c.id === targetId || c.slug === targetId);
+      if (targetComp) {
+        return canAccessCompanyOperationalData(hydrateCompanyMeta(targetComp), currentUser);
+      }
+      if (String(targetId).startsWith("company_") || String(targetId).startsWith("indiv_")) {
+        return false;
+      }
+      return true;
+    }
     const authComps = getAuthorizedCompanies();
     return authComps.some((c) => c.id === targetId);
   };
@@ -3550,7 +3847,19 @@ export default function App() {
   const getAuthorizedUsers = () => {
     if (!currentUser) return [];
     if (isGlobalSuperAdmin(currentUser)) {
-      return users.filter((u) => !["admin_0564468888", "admin_139213", "admin_13921313"].includes(u.id));
+      return users.filter((u) => {
+        if (["admin_0564468888", "admin_139213", "admin_13921313"].includes(u.id)) return false;
+        if (isAccountSuperAdmin(u) || isMaintenanceStaff(u)) return true;
+        return isCompanyAuthorized(u.company_id);
+      });
+    }
+    if (isMaintenanceStaff(currentUser)) {
+      const authCompIds = getAuthorizedCompanies().map((c) => c.id);
+      return users.filter((u) => {
+        if (u.id === currentUser.id) return true;
+        if (isGlobalSuperAdmin(u)) return false;
+        return authCompIds.includes(u.company_id || "");
+      });
     }
     if (currentUser.account_type === "individual" || String(currentUser.company_id || "").startsWith("indiv_")) {
       return [currentUser];
@@ -3558,7 +3867,7 @@ export default function App() {
     const authComps = getAuthorizedCompanies();
     const authCompIds = authComps.map((c) => c.id);
     return users.filter((u) => {
-      if (isGlobalSuperAdmin(u)) return false;
+      if (isGlobalSuperAdmin(u) || isMaintenanceStaff(u)) return false;
       if (u.account_type === "individual" || String(u.company_id || "").startsWith("indiv_")) return false;
       const uComp = u.company_id || "";
       return authCompIds.includes(uComp);
@@ -3580,11 +3889,18 @@ export default function App() {
 
   const getActivePerms = () => {
     if (!currentUser) return null;
-    if (currentUser.role === "admin") return currentUser.perms;
+    if (currentUser.role === "admin") {
+      if (isGlobalSuperAdmin(currentUser)) return currentUser.perms;
+      const isIndiv = currentUser.account_type === "individual" || String(currentUser.company_id || "").startsWith("indiv_");
+      return {
+        ...(isIndiv ? INDIVIDUAL_FULL_PERMS : COMPANY_MANAGER_FULL_PERMS),
+        ...(currentUser.perms || {}),
+      };
+    }
     
-    const activeId = selectedCompanyId !== "all" ? selectedCompanyId : (currentUser.company_id || "arab_world");
+    const activeId = selectedCompanyId !== "all" ? selectedCompanyId : (currentUser.company_id || getAuthorizedCompanies()[0]?.id || "");
     
-    if (currentUser.company_perms && currentUser.company_perms[activeId]) {
+    if (activeId && currentUser.company_perms && currentUser.company_perms[activeId]) {
       const compPermObj = currentUser.company_perms[activeId];
       if (compPermObj && !compPermObj.use_global) {
         return compPermObj;
@@ -3698,11 +4014,18 @@ export default function App() {
   useEffect(() => {
     if (currentUser) {
       if (isGlobalSuperAdmin(currentUser)) {
+        const authComps = getAuthorizedCompanies();
         if (activeSection === "financial_reports" && selectedCompanyId === "all") {
-          const firstComp = currentUser.company_id || (companies[0]?.id || "arab_world");
-          setSelectedCompanyId(firstComp);
-        } else if (selectedCompanyId !== "all" && !companies.some((c) => c.id === selectedCompanyId)) {
+          const firstComp = authComps[0]?.id || "";
+          if (firstComp) setSelectedCompanyId(firstComp);
+        } else if (selectedCompanyId !== "all" && !authComps.some((c) => c.id === selectedCompanyId)) {
           setSelectedCompanyId("all");
+          if (activeSlug) navigateToSlug(null);
+        }
+      } else if (isMaintenanceStaff(currentUser)) {
+        const authComps = getAuthorizedCompanies();
+        if (authComps.length > 0 && !authComps.some((c) => c.id === selectedCompanyId)) {
+          setSelectedCompanyId(authComps[0].id);
         }
       } else {
         const userCompId = currentUser.company_id || (currentUser.account_type === "individual" ? `indiv_${currentUser.id}` : "");
@@ -3807,14 +4130,40 @@ export default function App() {
 
   useEffect(() => {
     if (editQuoteId) return;
-    const targetId = formCompanyId || (selectedCompanyId !== "all" ? selectedCompanyId : currentUser?.company_id) || companies[0]?.id || "arab_world";
-    const comp = companies.find((c) => c.id === targetId) || companies[0];
+    const authComps = getAuthorizedCompanies();
+    const fallbackCompId =
+      selectedCompanyId !== "all" && authComps.some((c) => c.id === selectedCompanyId)
+        ? selectedCompanyId
+        : (authComps[0]?.id || "");
+    const targetId = formCompanyId || fallbackCompId;
+    const comp = authComps.find((c) => c.id === targetId) || authComps[0];
     const prefs = getCompanyDesignPrefs(comp);
     setQTemplateStyle(prefs.quote_template);
     setQPrimaryColor(prefs.quote_primary_color);
     setQAccentColor(prefs.quote_accent_color);
     setQLetterheadTemplate(prefs.letterhead_template);
   }, [formCompanyId, selectedCompanyId, companies, editQuoteId, currentUser]);
+
+  // Keep Official Letters active company strictly aligned with the logged-in/selected authorized company (prevents Arab World letterhead leak)
+  useEffect(() => {
+    if (!currentUser || editLetterId || letterCompanyId === "custom") return;
+    const authComps = getAuthorizedCompanies();
+    if (authComps.length === 0) return;
+
+    const preferredId =
+      selectedCompanyId !== "all" && authComps.some((c) => c.id === selectedCompanyId)
+        ? selectedCompanyId
+        : authComps[0].id;
+
+    const currentIsAuthorized = Boolean(letterCompanyId && authComps.some((c) => c.id === letterCompanyId));
+    if (!currentIsAuthorized || (selectedCompanyId !== "all" && letterCompanyId !== selectedCompanyId)) {
+      const targetComp = authComps.find((c) => c.id === preferredId) || authComps[0];
+      if (targetComp) {
+        setLetterCompanyId(targetComp.id);
+        setLetterCompanyName(targetComp.name || "");
+      }
+    }
+  }, [currentUser, selectedCompanyId, companies, editLetterId, letterCompanyId]);
 
   const handleSaveCompanyDesignPrefs = async (
     targetCompId: string,
@@ -3832,11 +4181,92 @@ export default function App() {
     setCompanies((prev) =>
       prev.map((c) => (c.id === targetCompId ? { ...c, ...prefs } : c))
     );
-    try {
-      await sb.from("companies").update(prefs as any).eq("id", targetCompId);
-    } catch {
-      // localStorage persistence already saved
+    await saveExtendedCompanyMeta(targetCompId, prefs as Partial<Company>);
+  };
+
+  const handleUpdateCompanyPrivacyAndMaintenance = async (
+    companyId: string,
+    updates: {
+      privacy_mode?: "strict_private" | "standard";
+      maintenance_allowed?: boolean;
+      maintenance_note?: string;
     }
+  ) => {
+    if (!companyId) return;
+    const target = companies.find((c) => c.id === companyId);
+    if (!target) return;
+
+    const patch: Partial<Company> = { ...updates };
+    if (updates.maintenance_allowed === true) {
+      patch.maintenance_enabled_at = new Date().toISOString();
+      patch.maintenance_enabled_by = currentUser?.name || "مدير الشركة";
+    } else if (updates.maintenance_allowed === false) {
+      patch.assigned_maintenance_user_id = "";
+      patch.assigned_maintenance_user_name = "";
+    }
+
+    setCompanies((prev) => prev.map((c) => (c.id === companyId ? { ...c, ...patch } : c)));
+    await saveExtendedCompanyMeta(companyId, patch);
+
+    let auditMsg = "";
+    if (updates.maintenance_allowed === true) {
+      auditMsg = `🛠️ تفعيل خانة الصيانة للسماح بالدعم الفني (${target.name})${updates.maintenance_note ? ` — السبب: ${updates.maintenance_note}` : ""}`;
+    } else if (updates.maintenance_allowed === false) {
+      auditMsg = `🔒 إغلاق خانة الصيانة فوراً وقطع وصول الصيانة عن (${target.name})`;
+    } else if (updates.privacy_mode === "strict_private") {
+      auditMsg = `🔒 تفعيل وضع الخصوصية التامة لمنشأة (${target.name})`;
+    } else if (updates.privacy_mode === "standard") {
+      auditMsg = `🔓 تحويل وضع خصوصية (${target.name}) إلى الوضع القياسي`;
+    }
+    if (auditMsg && currentUser) {
+      await logSession(currentUser, auditMsg);
+    }
+
+    showToast(
+      updates.maintenance_allowed === true
+        ? "🛠️ تم فتح خانة الصيانة — يمكن للسوبر أدمن الآن تخصيص موظف صيانة لمعالجة المشكلة."
+        : updates.maintenance_allowed === false
+          ? "🔒 تم إغلاق خانة الصيانة فوراً وقطع أي وصول لموظفي الصيانة."
+          : updates.privacy_mode === "strict_private"
+            ? "🔒 تم تفعيل الخصوصية التامة للشركة بنجاح."
+            : "✓ تم تحديث إعدادات الخصوصية والصيانة بنجاح.",
+      "success"
+    );
+  };
+
+  const handleAssignMaintenanceStaff = async (companyId: string, staffUserId: string | null) => {
+    if (!isGlobalSuperAdmin(currentUser)) {
+      showToast("⚠️ تخصيص موظفي الصيانة حصري للسوبر أدمن فقط!", "error");
+      return;
+    }
+    const targetComp = hydrateCompanyMeta(companies.find((c) => c.id === companyId) || ({} as Company));
+    if (!targetComp.id || targetComp.maintenance_allowed !== true) {
+      showToast("🔒 لا يمكن تخصيص موظف صيانة إلا بعد أن يقوم مدير الشركة بفتح خانة الصيانة أولاً!", "error");
+      return;
+    }
+    const staff = staffUserId ? users.find((u) => u.id === staffUserId) : null;
+    const patch: Partial<Company> = {
+      assigned_maintenance_user_id: staff?.id || "",
+      assigned_maintenance_user_name: staff?.name || "",
+    };
+
+    setCompanies((prev) => prev.map((c) => (c.id === companyId ? { ...c, ...patch } : c)));
+    await saveExtendedCompanyMeta(companyId, patch);
+
+    if (currentUser) {
+      await logSession(
+        currentUser,
+        staff
+          ? `🛠️ تخصيص موظف الصيانة (${staff.name}) لشركة (${targetComp.name})`
+          : `🔒 سحب تخصيص موظف الصيانة عن شركة (${targetComp.name})`
+      );
+    }
+    showToast(
+      staff
+        ? `🛠️ تم تخصيص موظف الصيانة «${staff.name}» لمعالجة مشاكل «${targetComp.name}» بنجاح!`
+        : `✓ تم إلغاء تخصيص موظف الصيانة لشركة «${targetComp.name}».`,
+      "success"
+    );
   };
 
   const getVisibleReceipts = () => {
@@ -4489,15 +4919,17 @@ export default function App() {
     if (!x) return;
 
     const assocCompanyId = x.company_id || "arab_world";
-    const compLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || "";
-    const compName = companies.find((c) => c.id === assocCompanyId)?.name || "شركة عرب وورلد";
+    const compObj = companies.find((c) => c.id === assocCompanyId);
+    const compLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || compObj?.logo_url || "";
+    const compName = compObj?.name || "المنشأة المعتمدة";
     const attachment = awExtractAttachment(x.notes || "");
 
     const clientContracts = installments.filter(
       (a) =>
-        (a.identity && x.identity && a.identity === x.identity) ||
-        (a.phone && x.phone && a.phone === x.phone) ||
-        (a.client && x.client && a.client === x.client)
+        (a.company_id || "arab_world") === assocCompanyId &&
+        ((a.identity && x.identity && a.identity === x.identity) ||
+          (a.phone && x.phone && a.phone === x.phone) ||
+          (a.client && x.client && a.client === x.client))
     );
 
     const totalAmount = clientContracts.reduce((sum, item) => sum + Number(item.amount || 0), 0);
@@ -4639,8 +5071,9 @@ ${attachment ? `
     if (!r) return;
 
     const assocCompanyId = r.company_id || "arab_world";
-    const compLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || "";
-    const compName = companies.find((c) => c.id === assocCompanyId)?.name || "شركة عرب وورلد";
+    const compObj = companies.find((c) => c.id === assocCompanyId);
+    const compLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || compObj?.logo_url || "";
+    const compName = compObj?.name || "المنشأة المعتمدة";
     const attachment = awExtractAttachment(r.notes || "");
 
     setPrintingReceiptId(id);
@@ -4944,12 +5377,12 @@ ${attachment ? `
 
   const onPrintPayment = (p: Payment) => {
     const assocCompanyId = p.company_id || "arab_world";
-    const compLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || "";
-    const comp = companies.find((c) => c.id === assocCompanyId) || companies[0];
-    const compName = comp?.name || "شركة عرب وورلد للمقاولات";
-    const crNumber = comp?.commercial_register || comp?.record_no || "1010777555";
+    const comp = companies.find((c) => c.id === assocCompanyId);
+    const compLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || comp?.logo_url || "";
+    const compName = comp?.name || "المنشأة المعتمدة";
+    const crNumber = comp?.commercial_register || comp?.record_no || "—";
     const taxNumber = comp?.tax_no || "لا يوجد";
-    const phone = comp?.phone || "0556446888";
+    const phone = comp?.phone || "—";
     const address = comp?.address || "المملكة العربية السعودية";
     const attachment = awExtractAttachment(p.notes || "");
     const treasury = awExtractTreasury(p.notes || "") || "خزنة الشركة";
@@ -5259,12 +5692,12 @@ ${attachment ? `
 
   const onPrintExpense = (e: Expense) => {
     const assocCompanyId = e.company_id || "arab_world";
-    const compLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || "";
-    const comp = companies.find((c) => c.id === assocCompanyId) || companies[0];
-    const compName = comp?.name || "شركة عرب وورلد للمقاولات";
-    const crNumber = comp?.commercial_register || comp?.record_no || "1010777555";
+    const comp = companies.find((c) => c.id === assocCompanyId);
+    const compLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || comp?.logo_url || "";
+    const compName = comp?.name || "المنشأة المعتمدة";
+    const crNumber = comp?.commercial_register || comp?.record_no || "—";
     const taxNumber = comp?.tax_no || "لا يوجد";
-    const phone = comp?.phone || "0556446888";
+    const phone = comp?.phone || "—";
     const address = comp?.address || "المملكة العربية السعودية";
     const attachment = awExtractAttachment(e.notes || "");
     const treasury = awExtractTreasury(e.notes || "") || "خزنة الشركة";
@@ -5570,12 +6003,11 @@ ${attachment ? `
   const onPrintQuote = (q: Quote) => {
     try {
       const parsed = deserializeQuoteNotes(q.notes, q.amount);
-      const assocCompanyId = q.company_id || "arab_world";
-      const company = companies.find((c) => c.id === assocCompanyId) || companies.find((c) => c.id === "arab_world") || companies[0];
-      const companyName = company?.name || "شركة عرب وورلد للمقاولات";
+      const assocCompanyId = q.company_id || (selectedCompanyId !== "all" ? selectedCompanyId : (currentUser?.company_id || ""));
+      const company = companies.find((c) => c.id === assocCompanyId);
       const customLetterhead = localStorage.getItem(`aw_company_letterhead_${assocCompanyId}`) || company?.letterhead_url || "";
       const customLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || company?.logo_url || "";
-      const isArabWorld = assocCompanyId === "arab_world" || companyName.includes("عرب وورلد للمقاولات");
+      const isArabWorld = assocCompanyId === "arab_world";
 
       const prefs = getCompanyDesignPrefs(company);
       const templateStyle = (parsed.design?.template_style || q.template_style || prefs.quote_template) as QuoteTemplateId;
@@ -5611,7 +6043,7 @@ ${attachment ? `
   };
 
   const handleUploadCompanyLetterhead = (targetCompId: string, file: File) => {
-    if (!file) return;
+    if (!file || !targetCompId) return;
     if (file.size > 8 * 1024 * 1024) {
       showToast("حجم ملف صورة الكليشة يجب ألا يتجاوز 8 ميجابايت", "error");
       return;
@@ -5624,9 +6056,7 @@ ${attachment ? `
         setCompanies((prev) =>
           prev.map((c) => (c.id === targetCompId ? { ...c, letterhead_url: dataUrl } : c))
         );
-        try {
-          await sb.from("companies").update({ letterhead_url: dataUrl } as any).eq("id", targetCompId);
-        } catch {}
+        await saveExtendedCompanyMeta(targetCompId, { letterhead_url: dataUrl });
         showToast("تم رفع واعتماد كليشة الشركة بنجاح! سيتم تطبيقها فوراً على كافة الخطابات وعروض الأسعار", "success");
       }
     };
@@ -5634,7 +6064,7 @@ ${attachment ? `
   };
 
   const handleUploadCompanyLogo = (targetCompId: string, file: File) => {
-    if (!file) return;
+    if (!file || !targetCompId) return;
     if (file.size > 5 * 1024 * 1024) {
       showToast("حجم ملف الشعار يجب ألا يتجاوز 5 ميجابايت", "error");
       return;
@@ -5647,9 +6077,7 @@ ${attachment ? `
         setCompanies((prev) =>
           prev.map((c) => (c.id === targetCompId ? { ...c, logo_url: dataUrl } : c))
         );
-        try {
-          await sb.from("companies").update({ logo_url: dataUrl } as any).eq("id", targetCompId);
-        } catch {}
+        await saveExtendedCompanyMeta(targetCompId, { logo_url: dataUrl });
         showToast("تم رفع واعتماد شعار الشركة بنجاح!", "success");
       }
     };
@@ -5657,13 +6085,12 @@ ${attachment ? `
   };
 
   const handleResetCompanyLetterhead = async (targetCompId: string) => {
+    if (!targetCompId) return;
     localStorage.removeItem(`aw_company_letterhead_${targetCompId}`);
     setCompanies((prev) =>
       prev.map((c) => (c.id === targetCompId ? { ...c, letterhead_url: "" } : c))
     );
-    try {
-      await sb.from("companies").update({ letterhead_url: "" } as any).eq("id", targetCompId);
-    } catch {}
+    await saveExtendedCompanyMeta(targetCompId, { letterhead_url: "" });
     showToast("تمت استعادة الكليشة الافتراضية للشركة", "info");
   };
 
@@ -5675,12 +6102,13 @@ ${attachment ? `
         return;
       }
 
-      const assocCompanyId = letter.company_id || "arab_world";
-      const comp = companies.find((c) => c.id === assocCompanyId) || companies.find((c) => c.id === "arab_world") || companies[0];
-      const companyName = letter.company_name?.trim() || comp?.name || "شركة عرب وورلد للمقاولات";
+      const authComps = getAuthorizedCompanies();
+      const assocCompanyId = letter.company_id || (selectedCompanyId !== "all" ? selectedCompanyId : (authComps[0]?.id || ""));
+      const comp = authComps.find((c) => c.id === assocCompanyId) || companies.find((c) => c.id === assocCompanyId);
+      const companyName = letter.company_name?.trim() || comp?.name || "الشركة المعتمدة";
       const customLetterhead = localStorage.getItem(`aw_company_letterhead_${assocCompanyId}`) || comp?.letterhead_url || "";
       const customLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || comp?.logo_url || "";
-      const isArabWorld = assocCompanyId === "arab_world" || companyName.includes("عرب وورلد للمقاولات");
+      const isArabWorld = assocCompanyId === "arab_world";
 
       const prefs = getCompanyDesignPrefs(comp);
       const effectiveLetterheadTemplate: LetterheadTemplateId =
@@ -5718,12 +6146,19 @@ ${attachment ? `
     const existingLetter = editLetterId ? letters.find((l) => l.id === editLetterId) : null;
     const letterNo = existingLetter ? existingLetter.no : generateNextNo("AW-LTR", letters, "no");
 
-    const matchedComp = companies.find((c) => c.id === letterCompanyId);
-    const resolvedCompanyName = letterCompanyName.trim() || matchedComp?.name || "شركة عرب وورلد للمقاولات";
+    const authComps = getAuthorizedCompanies();
+    const resolvedCompId =
+      letterCompanyId === "custom"
+        ? (selectedCompanyId !== "all" ? selectedCompanyId : (authComps[0]?.id || currentUser?.company_id || ""))
+        : (letterCompanyId && authComps.some((c) => c.id === letterCompanyId)
+            ? letterCompanyId
+            : (selectedCompanyId !== "all" ? selectedCompanyId : (authComps[0]?.id || currentUser?.company_id || "")));
+    const matchedComp = authComps.find((c) => c.id === resolvedCompId) || companies.find((c) => c.id === resolvedCompId);
+    const resolvedCompanyName = letterCompanyName.trim() || matchedComp?.name || "الشركة المعتمدة";
 
     const row: OfficialLetter = {
       id: editLetterId || `ltr_${Date.now()}`,
-      company_id: letterCompanyId || "arab_world",
+      company_id: resolvedCompId,
       company_name: resolvedCompanyName,
       letter_style: letterStyle,
       no: letterNo,
@@ -5763,7 +6198,7 @@ ${attachment ? `
     setLetterSubject("");
     setLetterContent("");
     setLetterAttachments("");
-    setLetterCompanyName("");
+    setLetterCompanyName(matchedComp?.name || "");
     showToast(editLetterId ? "تم تعديل الخطاب بنجاح!" : "تم حفظ الخطاب الرسمي بنجاح!");
   };
 
@@ -6637,6 +7072,9 @@ ${attachment ? `
     if (!editCompanyId) {
       row.id = targetCompanyId;
       row.status = isGlobalSuperAdmin(currentUser) ? "نشط" : "بانتظار موافقة السوبر أدمن";
+      row.registration_source = isGlobalSuperAdmin(currentUser) ? "super_admin_created" : "self_registered";
+      row.privacy_mode = isGlobalSuperAdmin(currentUser) ? "standard" : "strict_private";
+      row.maintenance_allowed = isGlobalSuperAdmin(currentUser) ? true : false;
       row.created_at = new Date().toISOString();
     }
 
@@ -6648,28 +7086,16 @@ ${attachment ? `
       }
       saveCompanyDesignPrefs(targetCompanyId, designPrefsPayload);
 
-      let { error } = editCompanyId
-        ? await sb.from("companies").update(row).eq("id", editCompanyId)
-        : await sb.from("companies").insert(row);
-
-      if (error && /column|schema/i.test(error.message || "")) {
-        const coreRow = { ...row };
-        delete coreRow.quote_template;
-        delete coreRow.quote_primary_color;
-        delete coreRow.quote_accent_color;
-        delete coreRow.letterhead_template;
-        delete coreRow.letterhead_primary_color;
-        delete coreRow.letterhead_accent_color;
-        const retry = editCompanyId
-          ? await sb.from("companies").update(coreRow).eq("id", editCompanyId)
-          : await sb.from("companies").insert(coreRow);
-        error = retry.error;
-      }
+      const coreRow = buildSupabaseCoreCompanyRow({ ...row, id: targetCompanyId });
+      const { error } = editCompanyId
+        ? await sb.from("companies").update(coreRow).eq("id", editCompanyId)
+        : await sb.from("companies").insert(coreRow);
 
       if (error) {
         showToast(error.message, "error");
         return;
       }
+      await saveExtendedCompanyMeta(targetCompanyId, row);
 
       await logSession(currentUser!, editCompanyId ? `تعديل ملف الشركة: ${cName}` : `إنشاء شركة فرعية جديدة: ${cName}`);
       setEditCompanyId(null);
@@ -6714,8 +7140,8 @@ ${attachment ? `
   };
 
   const onDeleteCompany = (id: string, name: string) => {
-    if (currentUser?.role !== "admin" && !can("companies")) {
-      showToast("⚠️ عذراً، لا تملك صلاحية حذف بطاقات الشركات!", "error");
+    if (!isGlobalSuperAdmin(currentUser)) {
+      showToast("⚠️ عذراً، حذف بطاقات الشركات من المنصة حصري للسوبر أدمن فقط!", "error");
       return;
     }
     triggerConfirm(
@@ -6750,6 +7176,10 @@ ${attachment ? `
     }
     if (!exCompanyId || !exTitle) {
       showToast("يرجى اختيار الشركة وكتابة اسم/رقم المستخلص مسبقًا", "error");
+      return;
+    }
+    if (!isGlobalSuperAdmin(currentUser) && !isCompanyAuthorized(exCompanyId)) {
+      showToast("⚠️ غير مصرح لك بإضافة أو تعديل مستخلصات خارج منشأتك!", "error");
       return;
     }
 
@@ -7387,7 +7817,14 @@ ${attachment ? `
     let finalRole = uRole;
     let finalCompanyId = uCompanyId;
 
-    if (!finalCompanyId || finalCompanyId === "all") {
+    if (finalRole === "maintenance" && !isGlobalSuperAdmin(currentUser)) {
+      showToast("⚠️ إنشاء أو تعديل حسابات موظفي الصيانة مقتصر على السوبر أدمن فقط!", "error");
+      return;
+    }
+
+    if (finalRole === "maintenance") {
+      finalCompanyId = "maintenance_pool";
+    } else if (!finalCompanyId || finalCompanyId === "all") {
       if (editUserId === SUPER_ADMIN_CANONICAL_ID) {
         finalCompanyId = "";
       } else {
@@ -7396,7 +7833,20 @@ ${attachment ? `
       }
     }
 
+    let scopedCompanyPerms = finalRole === "maintenance" ? {} : uCompanyPerms;
     if (!isGlobalSuperAdmin(currentUser)) {
+      if (editUserId) {
+        const targetExisting = users.find((u) => u.id === editUserId);
+        if (
+          targetExisting &&
+          (isAccountSuperAdmin(targetExisting) ||
+            isMaintenanceStaff(targetExisting) ||
+            !isCompanyAuthorized(targetExisting.company_id))
+        ) {
+          showToast("⚠️ غير مصرح لك بتعديل حسابات منشآت أخرى أو حساب السوبر أدمن أو موظفي الصيانة!", "error");
+          return;
+        }
+      }
       // Prevent privilege escalation to global super admin
       if (uRole === "admin" && !finalCompanyId) {
         finalRole = "employee";
@@ -7409,7 +7859,25 @@ ${attachment ? `
         showToast("⚠️ غير مصرح لك بتعيين موظف لهذه المنشأة!", "error");
         return;
       }
+
+      // Strip any company_perms outside the authorized company scope
+      scopedCompanyPerms = Object.fromEntries(
+        Object.entries(uCompanyPerms || {}).filter(([cId]) => authCompIds.includes(cId))
+      );
     }
+
+    const effectiveUserPerms =
+      (finalRole === "admin" && editUserId !== SUPER_ADMIN_CANONICAL_ID) || finalRole === "maintenance"
+        ? {
+            ...COMPANY_MANAGER_FULL_PERMS,
+            region: uRegion,
+            worker_id: uWorkerId.trim() || null,
+          }
+        : {
+            ...uPerms,
+            region: uRegion,
+            worker_id: uWorkerId.trim() || null,
+          };
 
     const row: any = {
       id: editUserId || undefined,
@@ -7417,16 +7885,17 @@ ${attachment ? `
       code: uCode.trim(),
       password: uPass.trim(),
       role: finalRole,
-      account_type: editUserId === SUPER_ADMIN_CANONICAL_ID ? "super_admin" : (finalRole === "admin" ? "company_manager" : "company_member"),
+      account_type:
+        editUserId === SUPER_ADMIN_CANONICAL_ID
+          ? "super_admin"
+          : finalRole === "maintenance"
+            ? "maintenance_staff"
+            : (finalRole === "admin" ? "company_manager" : "company_member"),
       company_id: editUserId === SUPER_ADMIN_CANONICAL_ID ? (finalCompanyId || null) : finalCompanyId,
       status: uStatus,
       updated_at: new Date().toISOString(),
-      perms: {
-        ...uPerms,
-        region: uRegion,
-        worker_id: uWorkerId.trim() || null,
-      },
-      company_perms: uCompanyPerms,
+      perms: effectiveUserPerms,
+      company_perms: scopedCompanyPerms,
     };
 
     setIsLoading(true);
@@ -7492,12 +7961,16 @@ ${attachment ? `
 
   const deleteUserLogicExecute = async (id: string, name: string) => {
     if (currentUser?.role !== "admin") {
-      showToast("⚠️ عذراً، حذف حسابات الموظفين مقتصر حصرياً على الأدمن العام منعاً لتغيير أو مسح بيانات المستخدمين!", "error");
+      showToast("⚠️ عذراً، حذف حسابات الموظفين مقتصر حصرياً على مدير المنشأة أو السوبر أدمن!", "error");
       return;
     }
     const target = users.find(u => u.id === id);
-    if (target?.role === "admin") {
-      showToast("⚠️ محمي: لا يمكن مسح حساب مسؤول النظام العام (الأدمن) لضمان بقاء النظام ومستخدميه!", "error");
+    if (!target || target?.role === "admin" || isAccountSuperAdmin(target)) {
+      showToast("⚠️ محمي: لا يمكن مسح حساب مسؤول النظام أو المدير العام!", "error");
+      return;
+    }
+    if (!isGlobalSuperAdmin(currentUser) && !isCompanyAuthorized(target.company_id)) {
+      showToast("⚠️ غير مصرح لك بحذف موظفين خارج منشأتك!", "error");
       return;
     }
     setIsLoading(true);
@@ -7694,7 +8167,7 @@ ${attachment ? `
     { key: "projects", label: "المشاريع الجارية", icon: Briefcase, visible: !isAttendanceOnly && can("projects") },
     { key: "workers", label: "العمال والسلفيات", icon: Users, visible: !isAttendanceOnly && !isIndividualAccount && can("workers") },
     { key: "hr", label: "شؤون الموظفين", icon: Users, visible: !isAttendanceOnly && !isIndividualAccount && can("workers") },
-    { key: "company_assets", label: "أصول وممتلكات المنشأة", icon: Building, visible: !isAttendanceOnly && !isIndividualAccount && (currentUser?.role === "admin" || can("companies")) },
+    { key: "company_assets", label: isIndividualAccount ? "أصولي وممتلكاتي" : "أصول وممتلكات المنشأة", icon: Building, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("companies")) },
     { key: "companies", label: isGlobalSuperAdmin(currentUser) ? "دليل الشركات والمستخلصات (السوبر أدمن)" : "ملف المنشأة والمستخلصات", icon: Building, visible: !isAttendanceOnly && !isIndividualAccount && (currentUser?.role === "admin" || can("companies")) },
     { key: "users", label: "الموظفين والصلاحية", icon: Settings, visible: !isAttendanceOnly && !isIndividualAccount && (currentUser?.role === "admin" || can("users")) },
     { key: "sessions", label: "سجل حركات النظام", icon: Clock, visible: !isAttendanceOnly && !isIndividualAccount && (currentUser?.role === "admin" || can("sessions")) },
@@ -7899,8 +8372,9 @@ ${attachment ? `
             onClose={() => setShowAuthModal(false)}
             userCode={loginCode || "1001"}
             userName={loginCode || "الموظف المفوّض"}
-            companyName={activeCompany?.name || "شركة عرب وورلد"}
+            companyName={activeCompany?.name || "بوابة الحسابات السحابية"}
             showToast={showToast}
+            hideLiveCodePreview={true}
             onSuccess2FA={(userCode, totpCode) => {
               handleDirectLogin(userCode, totpCode, activeCompany?.id);
             }}
@@ -7914,7 +8388,7 @@ ${attachment ? `
               <span>مراجعة الآليات التشغيلية نشطة</span>
             </div>
             <p className="text-[9px] font-medium text-slate-600 leading-relaxed max-w-xs mx-auto">
-              بموجب أنظمة هيئة المقاولات واللوائح والائتمان الموحدة لشركة {activeCompany?.name || "عرب وورلد"}.
+              بموجب أنظمة ولوائح الاعتماد الموحدة {activeCompany?.name ? `لـ ${activeCompany.name}` : "في المنصة السحابية"}.
             </p>
           </div>
         </div>
@@ -7953,15 +8427,19 @@ ${attachment ? `
               : authComps[0];
             const brandName = isIndividualAccount
               ? currentUser.name
-              : (brandComp?.name || "عرب وورلد آدز");
+              : (brandComp?.name || "منظومة الأعمال");
             const brandSub = isIndividualAccount
               ? "حساب أفراد مستقل"
-              : (brandComp?.activity || "الحسابات والتقسيط الذكي");
+              : isMaintenanceStaff(currentUser)
+                ? "وضع الصيانة المؤقتة"
+                : (brandComp?.activity || "الحسابات والتقسيط الذكي");
             const monogram = isIndividualAccount
               ? "ID"
-              : brandComp?.id === "arab_world" || !brandComp
+              : brandComp?.id === "arab_world"
                 ? "AW"
-                : brandName.trim().slice(0, 2).toUpperCase();
+                : brandComp
+                  ? brandName.trim().slice(0, 2).toUpperCase()
+                  : "ER";
             return (
               <div className="flex items-center gap-3 border-b border-white/5 pb-5">
                 <div className="w-9 h-10 bg-amber-500 rounded-xl flex items-center justify-center shadow-lg relative shrink-0">
@@ -8016,11 +8494,13 @@ ${attachment ? `
             <span className="block text-[10px] font-bold text-slate-400 mt-1">
               {isGlobalSuperAdmin(currentUser)
                 ? "👑 السوبر أدمن (الوحيد)"
-                : isIndividualAccount
-                  ? "👤 حساب أفراد مستقل"
-                  : currentUser.role === "admin"
-                    ? `🏛️ المدير العام (${currentUser.entity_type === "مؤسسة" ? "للمؤسسة" : "للشركة"})`
-                    : (currentUser.role === "cashier" ? "💰 كاشير / أمين صندوق" : (currentUser.role === "supervisor" ? "مشرف عام / رئيسي" : "موظف الفرع"))}
+                : isMaintenanceStaff(currentUser)
+                  ? "🛠️ موظف صيانة مخصّص (صلاحية مؤقتة)"
+                  : isIndividualAccount
+                    ? "👤 حساب أفراد مستقل"
+                    : currentUser.role === "admin"
+                      ? `🏛️ المدير العام (${currentUser.entity_type === "مؤسسة" ? "للمؤسسة" : "للشركة"})`
+                      : (currentUser.role === "cashier" ? "💰 كاشير / أمين صندوق" : (currentUser.role === "supervisor" ? "مشرف عام / رئيسي" : "موظف الفرع"))}
               {userRegionFilter && ` • ${userRegionFilter}`}
             </span>
           </div>
@@ -8075,6 +8555,12 @@ ${attachment ? `
                     })()}
                   </span>
                 </h1>
+
+                {isMaintenanceStaff(currentUser) && (
+                  <span className="px-2.5 py-1 rounded-xl text-[10px] font-black bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 shrink-0">
+                    🛠️ صلاحية صيانة مؤقتة مفعّلة من مالك المنشأة
+                  </span>
+                )}
               </div>
 
               {/* Active Company Selector Pill (only Super Admin or authorized multi-company user) */}
@@ -8088,20 +8574,24 @@ ${attachment ? `
                     value={selectedCompanyId}
                     onChange={(e) => {
                       const val = e.target.value;
-                      setSelectedCompanyId(val);
                       if (val === "all") {
+                        if (!isGlobalSuperAdmin(currentUser)) return;
+                        setSelectedCompanyId("all");
                         navigateToSlug(null);
                       } else {
-                        const matched = companies.find((c) => c.id === val);
-                        if (matched) {
-                          navigateToSlug(matched.slug || matched.id);
+                        const matched = getAuthorizedCompanies().find((c) => c.id === val);
+                        if (!matched || !isCompanyAuthorized(val)) {
+                          showToast("🔒 غير مصرح لك بالدخول لهذه المنشأة!", "error");
+                          return;
                         }
+                        setSelectedCompanyId(val);
+                        navigateToSlug(matched.slug || matched.id);
                       }
                     }}
                     className="bg-slate-950 border border-slate-700/80 text-amber-200 font-black text-xs rounded-lg px-2 py-1 focus:outline-none focus:border-amber-400 cursor-pointer"
                   >
                     {isGlobalSuperAdmin(currentUser) && activeSection !== "financial_reports" && (
-                      <option value="all" className="bg-slate-950 text-amber-300 font-bold">✨ كل الشركات ({getAuthorizedCompanies().length})</option>
+                      <option value="all" className="bg-slate-950 text-amber-300 font-bold">✨ كل الشركات المصرحة ({getAuthorizedCompanies().length})</option>
                     )}
                     {getAuthorizedCompanies().map((c) => (
                       <option key={c.id} value={c.id} className="bg-slate-950 text-slate-100 font-bold">🏢 {c.name}</option>
@@ -8175,8 +8665,8 @@ ${attachment ? `
                 <span>الباركود / Authenticator</span>
               </button>
 
-              {/* Database Connection Status Indicator - Restricted exclusively to Admin */}
-              {currentUser?.role === "admin" && (
+              {/* Database Connection Status Indicator - Restricted exclusively to Single Super Admin */}
+              {isGlobalSuperAdmin(currentUser) && (
                 <DatabaseStatusIndicator showToast={showToast} isAdmin={true} />
               )}
 
@@ -8348,12 +8838,13 @@ ${attachment ? `
 
                 {/* Quote Design, Shape, Colors & Letterhead Customizer */}
                 {(() => {
-                  const targetQuoteCompId = getTargetCompanyId(formCompanyId) || companies[0]?.id || "arab_world";
-                  const targetQuoteComp = companies.find((c) => c.id === targetQuoteCompId) || companies[0];
+                  const authQuoteComps = getAuthorizedCompanies();
+                  const targetQuoteCompId = getTargetCompanyId(formCompanyId) || authQuoteComps[0]?.id || "";
+                  const targetQuoteComp = authQuoteComps.find((c) => c.id === targetQuoteCompId) || authQuoteComps[0];
                   const activeQuoteShapeName = QUOTE_TEMPLATES.find((t) => t.id === qTemplateStyle)?.name || "الشكل الرسمي المتكامل";
                   const activeLetterheadName = LETTERHEAD_TEMPLATES.find((l) => l.id === qLetterheadTemplate)?.name || "التلقائي الذكي";
-                  const compCustomLH = localStorage.getItem(`aw_company_letterhead_${targetQuoteCompId}`) || targetQuoteComp?.letterhead_url || "";
-                  const compCustomLogo = localStorage.getItem(`aw_company_logo_${targetQuoteCompId}`) || targetQuoteComp?.logo_url || "";
+                  const compCustomLH = targetQuoteCompId ? (localStorage.getItem(`aw_company_letterhead_${targetQuoteCompId}`) || targetQuoteComp?.letterhead_url || "") : "";
+                  const compCustomLogo = targetQuoteCompId ? (localStorage.getItem(`aw_company_logo_${targetQuoteCompId}`) || targetQuoteComp?.logo_url || "") : "";
 
                   return (
                     <div className="space-y-3 border-t border-slate-800/80 pt-4">
@@ -8627,7 +9118,8 @@ ${attachment ? `
                   <tbody>
                     {getVisibleQuotes().map((q, idx) => {
                       const parsed = deserializeQuoteNotes(q.notes, q.amount);
-                      const qComp = companies.find((c) => c.id === (q.company_id || "arab_world")) || companies[0];
+                      const authCompsList = getAuthorizedCompanies();
+                      const qComp = authCompsList.find((c) => c.id === q.company_id) || companies.find((c) => c.id === q.company_id) || authCompsList[0];
                       const qCompPrefs = getCompanyDesignPrefs(qComp);
                       const rowTplId = (parsed.design?.template_style || q.template_style || qCompPrefs.quote_template) as QuoteTemplateId;
                       const rowPrim = parsed.design?.primary_color || q.primary_color || qCompPrefs.quote_primary_color;
@@ -8657,7 +9149,7 @@ ${attachment ? `
                             <button
                               onClick={() => {
                                 const parsedNotes = deserializeQuoteNotes(q.notes, q.amount);
-                                const targetComp = companies.find((c) => c.id === (q.company_id || "arab_world")) || companies[0];
+                                const targetComp = authCompsList.find((c) => c.id === q.company_id) || companies.find((c) => c.id === q.company_id) || authCompsList[0];
                                 const prefs = getCompanyDesignPrefs(targetComp);
                                 setEditQuoteId(q.id);
                                 setQClient(q.client || "");
@@ -8710,12 +9202,23 @@ ${attachment ? `
 
           {/* Official Letters Tab Container (كليشة الخطابات الرسمية) */}
           {activeSection === "letters" && (currentUser?.role === "admin" || can("quotes")) && (() => {
-            const activeLetterCompObj = companies.find((c) => c.id === letterCompanyId) || companies[0];
-            const activeLetterDisplayTitle = letterCompanyName.trim() || activeLetterCompObj?.name || "شركة عرب وورلد للمقاولات";
-            const currentLetterCompId = letterCompanyId === "custom" ? (activeLetterCompObj?.id || "arab_world") : (letterCompanyId || activeLetterCompObj?.id || "arab_world");
-            const currentLetterCustomLetterhead = localStorage.getItem(`aw_company_letterhead_${currentLetterCompId}`) || (activeLetterCompObj as any)?.letterhead_url || "";
-            const currentLetterCustomLogo = localStorage.getItem(`aw_company_logo_${currentLetterCompId}`) || activeLetterCompObj?.logo_url || "";
-            const isLetterArabWorld = currentLetterCompId === "arab_world" || activeLetterDisplayTitle.includes("عرب وورلد للمقاولات");
+            const authLetterComps = getAuthorizedCompanies();
+            const activeLetterCompObj =
+              authLetterComps.find((c) => c.id === letterCompanyId) ||
+              (selectedCompanyId !== "all" ? authLetterComps.find((c) => c.id === selectedCompanyId) : undefined) ||
+              authLetterComps[0];
+            const currentLetterCompId =
+              letterCompanyId === "custom"
+                ? (activeLetterCompObj?.id || "")
+                : (authLetterComps.some((c) => c.id === letterCompanyId) ? letterCompanyId : (activeLetterCompObj?.id || ""));
+            const activeLetterDisplayTitle = letterCompanyName.trim() || activeLetterCompObj?.name || "المنشأة المعتمدة";
+            const currentLetterCustomLetterhead = currentLetterCompId
+              ? (localStorage.getItem(`aw_company_letterhead_${currentLetterCompId}`) || (activeLetterCompObj as any)?.letterhead_url || "")
+              : "";
+            const currentLetterCustomLogo = currentLetterCompId
+              ? (localStorage.getItem(`aw_company_logo_${currentLetterCompId}`) || activeLetterCompObj?.logo_url || "")
+              : "";
+            const isLetterArabWorld = currentLetterCompId === "arab_world";
             const activeLetterPrefs = getCompanyDesignPrefs(activeLetterCompObj);
             const activeLetterTemplateName = LETTERHEAD_TEMPLATES.find((l) => l.id === activeLetterPrefs.letterhead_template)?.name || "التلقائي الذكي";
 
@@ -8782,7 +9285,7 @@ ${attachment ? `
                       </div>
                       <div className="text-xs font-black text-white max-w-[230px] truncate">{activeLetterDisplayTitle}</div>
                       <div className="text-[10px] text-slate-400 font-mono">
-                        {activeLetterCompObj?.phone || "0539853287"} | {activeLetterCompObj?.commercial_register ? `س.ت: ${activeLetterCompObj.commercial_register}` : "المملكة العربية السعودية"}
+                        {activeLetterCompObj?.phone || "—"} | {activeLetterCompObj?.commercial_register ? `س.ت: ${activeLetterCompObj.commercial_register}` : "المملكة العربية السعودية"}
                       </div>
 
                       {/* Quick Upload & Template Switch Actions */}
@@ -8873,7 +9376,8 @@ ${attachment ? `
                         setLetterSubject("");
                         setLetterContent("");
                         setLetterAttachments("");
-                        setLetterCompanyName("");
+                        setLetterCompanyId(activeLetterCompObj?.id || "");
+                        setLetterCompanyName(activeLetterCompObj?.name || "");
                       }}
                       className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold"
                     >
@@ -8979,7 +9483,7 @@ ${attachment ? `
                           const val = e.target.value;
                           setLetterCompanyId(val);
                           if (val !== "custom") {
-                            const matched = companies.find((c) => c.id === val);
+                            const matched = getAuthorizedCompanies().find((c) => c.id === val);
                             if (matched) setLetterCompanyName(matched.name);
                           }
                         }}
@@ -9002,10 +9506,10 @@ ${attachment ? `
                       </label>
                       <input
                         required
-                        placeholder="مثال: شركة عرب وورلد للمقاولات أو اسم الشركة الطالبة..."
+                        placeholder="أدخل الاسم الرسمي للشركة أو المؤسسة..."
                         value={
                           letterCompanyName ||
-                          (companies.find((c) => c.id === letterCompanyId)?.name || "")
+                          (getAuthorizedCompanies().find((c) => c.id === letterCompanyId)?.name || activeLetterCompObj?.name || "")
                         }
                         onChange={(e) => setLetterCompanyName(e.target.value)}
                         className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-black text-amber-300 focus:outline-none focus:border-amber-400 font-sans"
@@ -9170,7 +9674,7 @@ ${attachment ? `
                           signatory_name: letterSignatoryName,
                           signatory_title: letterSignatoryTitle,
                           attachments: letterAttachments,
-                          company_id: letterCompanyId || "arab_world",
+                          company_id: currentLetterCompId || activeLetterCompObj?.id || "",
                           company_name: activeLetterDisplayTitle,
                           letter_style: letterStyle
                         });
@@ -9242,7 +9746,7 @@ ${attachment ? `
                       {getVisibleLetters()
                         .filter((l) => {
                           if (letterCompanyFilter !== "all") {
-                            const lComp = l.company_id || "arab_world";
+                            const lComp = l.company_id || "";
                             if (lComp !== letterCompanyFilter) return false;
                           }
                           if (!letterSearch) return true;
@@ -9259,7 +9763,7 @@ ${attachment ? `
                             <td className="py-3 px-3 font-mono font-black text-amber-400">{l.no}</td>
                             <td className="py-3 px-3 font-bold text-amber-300">
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[11px]">
-                                🏢 {l.company_name || companies.find((c) => c.id === l.company_id)?.name || "شركة عرب وورلد"}
+                                🏢 {l.company_name || getAuthorizedCompanies().find((c) => c.id === l.company_id)?.name || companies.find((c) => c.id === l.company_id)?.name || "المنشأة المعتمدة"}
                               </span>
                             </td>
                             <td className="py-3 px-3 font-mono text-slate-300">{l.date}</td>
@@ -9286,7 +9790,7 @@ ${attachment ? `
                                   setLetterSignatoryName(l.signatory_name || "م/ إدارة الشركة");
                                   setLetterSignatoryTitle(l.signatory_title || "المدير العام");
                                   setLetterAttachments(l.attachments || "");
-                                  setLetterCompanyId(l.company_id || "arab_world");
+                                  setLetterCompanyId(l.company_id || activeLetterCompObj?.id || "");
                                   setLetterCompanyName(l.company_name || "");
                                   setLetterStyle(l.letter_style || "letterhead");
                                   window.scrollTo({ top: 300, behavior: "smooth" });
@@ -11772,7 +12276,7 @@ ${attachment ? `
               companies={getAuthorizedCompanies()}
               extracts={extracts.filter((ex) => isCompanyAuthorized(ex.company_id))}
               currentUser={currentUser}
-              activeCompanyId={selectedCompanyId !== "all" ? selectedCompanyId : (currentUser?.company_id || getAuthorizedCompanies()[0]?.id || "arab_world")}
+              activeCompanyId={selectedCompanyId !== "all" ? selectedCompanyId : (currentUser?.company_id || getAuthorizedCompanies()[0]?.id || (isGlobalSuperAdmin(currentUser) ? "arab_world" : ""))}
               isSuperAdmin={isGlobalSuperAdmin(currentUser)}
             />
           )}
@@ -11787,7 +12291,19 @@ ${attachment ? `
                   currentUser={currentUser}
                   onApproveCompany={handleApproveCompany}
                   onRejectCompany={handleRejectCompany}
-                  onSwitchCompany={(id) => setSelectedCompanyId(id)}
+                  onAssignMaintenanceUser={handleAssignMaintenanceStaff}
+                  isCompanyStrictPrivate={isCompanyStrictPrivate}
+                  onSwitchCompany={(id) => {
+                    const target = companies.find((c) => c.id === id);
+                    if (target && !canAccessCompanyOperationalData(target, currentUser)) {
+                      showToast("🔒 هذه المنشأة في وضع الخصوصية التامة — لا يمكن الدخول إليها إلا بعد تفعيل خانة الصيانة من مديرها العام!", "error");
+                      return;
+                    }
+                    setSelectedCompanyId(id);
+                    if (target) {
+                      navigateToSlug(target.slug || target.id);
+                    }
+                  }}
                   showToast={showToast}
                 />
               )}
@@ -12319,6 +12835,116 @@ ${attachment ? `
                                     <p className="flex justify-between text-[9px] mt-1"><span className="text-slate-505 shrink-0">العنوان:</span> <span className="text-slate-300 leading-normal text-left truncate max-w-xs">{comp.address}</span></p>
                                   )}
                                 </div>
+
+                                {/* Privacy & Maintenance Gate Control Panel (GM & authorized non-maintenance admins) */}
+                                {currentUser && !isMaintenanceStaff(currentUser) && (currentUser.role === "admin" || can("companies")) && (() => {
+                                  const strictMode = isCompanyStrictPrivate(comp);
+                                  const maintOpen = comp.maintenance_allowed === true;
+                                  const noteDraft = gmMaintenanceNotes[comp.id] ?? comp.maintenance_note ?? "";
+                                  const maintLogs = sessions
+                                    .filter((s) => s.company_id === comp.id && ((s.action || "").includes("صيانة") || (s.action || "").includes("الخصوصية")))
+                                    .slice(0, 4);
+
+                                  return (
+                                    <div className="mt-2 p-3 rounded-2xl border border-cyan-500/25 bg-slate-900/80 space-y-2.5 text-right">
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <span className="text-[11px] font-black text-cyan-300 flex items-center gap-1.5">
+                                          <span>🔒</span>
+                                          <span>الخصوصية التامة وخانة الصيانة</span>
+                                        </span>
+                                        <div className="flex flex-wrap items-center gap-1.5">
+                                          <span className={`px-2 py-0.5 rounded-md text-[9px] font-black border ${strictMode ? "bg-indigo-500/15 text-indigo-300 border-indigo-500/30" : "bg-slate-800 text-slate-300 border-slate-700"}`}>
+                                            {strictMode ? "🔒 خصوصية تامة (محجوبة عن السوبر أدمن)" : "🏢 وضع قياسي"}
+                                          </span>
+                                          <span className={`px-2 py-0.5 rounded-md text-[9px] font-black border ${maintOpen ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" : "bg-rose-500/10 text-rose-300 border-rose-500/25"}`}>
+                                            {maintOpen ? "🛠️ الصيانة مفعّلة" : "⛔ الصيانة مغلقة"}
+                                          </span>
+                                        </div>
+                                      </div>
+
+                                      <p className="text-[9.5px] text-slate-400 leading-relaxed">
+                                        في وضع الخصوصية التامة لا يمكن لأي طرف خارجي أو السوبر أدمن الدخول أو استعراض بيانات المنشأة إلا عند فتح <b>خانة الصيانة</b> أدناه، ويمكنك إغلاقها بضغطة واحدة فور انتهاء الدعم.
+                                      </p>
+
+                                      <div className="space-y-1">
+                                        <label className="text-[9.5px] font-black text-slate-400 block">
+                                          وصف المشكلة / سبب فتح الصيانة لموظف الدعم
+                                        </label>
+                                        <input
+                                          type="text"
+                                          placeholder="مثال: مراجعة ترحيل قيود أو ضبط تنسيق الكليشة..."
+                                          value={noteDraft}
+                                          onChange={(e) => setGmMaintenanceNotes((prev) => ({ ...prev, [comp.id]: e.target.value }))}
+                                          className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-[11px] font-bold text-white focus:outline-none focus:border-cyan-500"
+                                        />
+                                      </div>
+
+                                      {comp.assigned_maintenance_user_name && (
+                                        <div className="px-2.5 py-1.5 rounded-xl bg-cyan-500/10 border border-cyan-500/25 text-[10px] text-cyan-200 font-bold flex items-center justify-between gap-2">
+                                          <span>🛠️ موظف الصيانة المخصّص حالياً:</span>
+                                          <span className="font-black text-white">{comp.assigned_maintenance_user_name}</span>
+                                        </div>
+                                      )}
+
+                                      <div className="flex flex-wrap gap-2 pt-0.5">
+                                        {maintOpen ? (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleUpdateCompanyPrivacyAndMaintenance(comp.id, {
+                                                maintenance_allowed: false,
+                                              })
+                                            }
+                                            className="flex-1 py-1.5 px-3 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-200 text-[10px] font-black cursor-pointer transition-all"
+                                          >
+                                            🔒 إغلاق خانة الصيانة فوراً وقطع الدخول
+                                          </button>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleUpdateCompanyPrivacyAndMaintenance(comp.id, {
+                                                maintenance_allowed: true,
+                                                maintenance_note: noteDraft.trim() || "طلب مساعدة فنية ومعالجة مشاكل داخلية",
+                                              })
+                                            }
+                                            className="flex-1 py-1.5 px-3 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-200 text-[10px] font-black cursor-pointer transition-all"
+                                          >
+                                            🛠️ السماح بخانة الصيانة لمعالجة المشاكل
+                                          </button>
+                                        )}
+
+                                        {!isGlobalSuperAdmin(currentUser) && (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleUpdateCompanyPrivacyAndMaintenance(comp.id, {
+                                                privacy_mode: strictMode ? "standard" : "strict_private",
+                                                ...(strictMode ? {} : { maintenance_allowed: false }),
+                                              })
+                                            }
+                                            className="py-1.5 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-300 text-[10px] font-bold cursor-pointer transition-all"
+                                            title="تبديل مستوى الخصوصية للمنشأة"
+                                          >
+                                            {strictMode ? "تبديل لوضع قياسي" : "تفعيل الخصوصية التامة 🔒"}
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      {maintLogs.length > 0 && (
+                                        <div className="pt-2 border-t border-slate-800/80 space-y-1">
+                                          <span className="block text-[9px] font-black text-slate-500">آخر حركات الصيانة والخصوصية للمنشأة:</span>
+                                          {maintLogs.map((ml, mlIdx) => (
+                                            <div key={ml.id || mlIdx} className="text-[9.5px] text-slate-400 flex justify-between gap-2 bg-slate-950/60 px-2 py-1 rounded-lg">
+                                              <span className="truncate text-slate-300">{ml.action}</span>
+                                              <span className="font-mono text-[8.5px] text-slate-500 shrink-0">{ml.time}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             </div>
                           );
@@ -13020,30 +13646,61 @@ CREATE TABLE extracts (
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditUserId(null);
-                    setURole("cashier");
-                    const targetCompany = getAuthorizedCompanies().find(c => c.id === selectedCompanyId) || getAuthorizedCompanies()[0];
-                    const compName = targetCompany ? targetCompany.name : "الفرع";
-                    setUName(`كاشير الصندوق (${compName})`);
-                    setUCode(`cashier_${Math.floor(100 + Math.random() * 900)}`);
-                    setUPass("123456");
-                    setUWorkerId("");
-                    setURegion("");
-                    setUCompanyId(targetCompany ? targetCompany.id : "");
-                    setUStatus("نشط");
-                    setSelectedCompanyIdForPerms("global");
-                    setUPerms({ ...CASHIER_DEFAULT_PERMS });
-                    showToast("✓ تم تجهيز بيانات الكاشير بالصلاحيات الكاملة تلقائياً! قم بمراجعة البيانات واضغط حفظ بالأسفل.");
-                  }}
-                  className="px-4 py-2.5 bg-gradient-to-l from-amber-500 via-amber-600 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black rounded-xl text-xs transition-all flex items-center gap-2 shrink-0 cursor-pointer shadow-md shadow-amber-500/20 active:scale-95"
-                  title="تجهيز كاشير معتمد بكامل صلاحيات الصندوق والتحصيل"
-                >
-                  <span>➕</span>
-                  <span>تعبئة كاشير معتمد فورياً</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditUserId(null);
+                      setURole("cashier");
+                      const targetCompany = getAuthorizedCompanies().find(c => c.id === selectedCompanyId) || getAuthorizedCompanies()[0];
+                      const compName = targetCompany ? targetCompany.name : "الفرع";
+                      setUName(`كاشير الصندوق (${compName})`);
+                      setUCode(`cashier_${Math.floor(100 + Math.random() * 900)}`);
+                      setUPass("123456");
+                      setUWorkerId("");
+                      setURegion("");
+                      setUCompanyId(targetCompany ? targetCompany.id : "");
+                      setUStatus("نشط");
+                      setSelectedCompanyIdForPerms("global");
+                      setUPerms({ ...CASHIER_DEFAULT_PERMS });
+                      showToast("✓ تم تجهيز بيانات الكاشير بالصلاحيات الكاملة تلقائياً! قم بمراجعة البيانات واضغط حفظ بالأسفل.");
+                    }}
+                    className="px-4 py-2.5 bg-gradient-to-l from-amber-500 via-amber-600 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black rounded-xl text-xs transition-all flex items-center gap-2 shrink-0 cursor-pointer shadow-md shadow-amber-500/20 active:scale-95"
+                    title="تجهيز كاشير معتمد بكامل صلاحيات الصندوق والتحصيل"
+                  >
+                    <span>➕</span>
+                    <span>تعبئة كاشير معتمد فورياً</span>
+                  </button>
+
+                  {isGlobalSuperAdmin(currentUser) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditUserId(null);
+                        setURole("maintenance");
+                        setUName("مهندس الصيانة والدعم الفني");
+                        setUCode(`maint_${Math.floor(100 + Math.random() * 900)}`);
+                        setUPass("123456");
+                        setUWorkerId("");
+                        setURegion("");
+                        setUCompanyId("maintenance_pool");
+                        setUStatus("نشط");
+                        setSelectedCompanyIdForPerms("global");
+                        setUCompanyPerms({});
+                        const fullFlags = Object.fromEntries(
+                          Object.entries(COMPANY_MANAGER_FULL_PERMS).filter(([k]) => k !== "region" && k !== "worker_id")
+                        ) as Record<string, boolean>;
+                        setUPerms(fullFlags);
+                        showToast("🛠️ تم تجهيز بيانات موظف صيانة مخصّص! لن يتمكن من الدخول لأي شركة إلا إذا فتحت خانة الصيانة وتم تخصيصه لها.");
+                      }}
+                      className="px-4 py-2.5 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-200 font-black rounded-xl text-xs transition-all flex items-center gap-2 shrink-0 cursor-pointer shadow-md"
+                      title="إنشاء موظف صيانة مخصّص لتعيينه على الشركات التي تفعل خانة الصيانة"
+                    >
+                      <span>🛠️</span>
+                      <span>تجهيز موظف صيانة مخصّص</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               <form onSubmit={saveUserLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
@@ -13063,7 +13720,7 @@ CREATE TABLE extracts (
                         <label className="text-[10px] text-slate-400 font-black block">ربط الحساب بملف عامل / موظف حالي للشركة (اختياري)</label>
                         {(() => {
                           const targetWorkersList = getVisibleWorkers().filter(
-                            (w) => !uCompanyId || (w.company_id || "arab_world") === uCompanyId
+                            (w) => !uCompanyId || uCompanyId === "maintenance_pool" || w.company_id === uCompanyId
                           );
                           return (
                             <select
@@ -13181,42 +13838,57 @@ CREATE TABLE extracts (
                                 ...CASHIER_DEFAULT_PERMS,
                                 messages: true,
                               });
-                            } else if (newRole === "supervisor") {
-                              setUPerms({
-                                attendance: true,
-                                messages: true,
-                                dashboard: true,
-                                installmentsView: true,
-                                installmentsAdd: true,
-                                installmentsEdit: true,
-                                installmentsDelete: false,
-                                quotes: true,
-                                receipts: true,
-                                payments: true,
-                                expenses: true,
-                                treasury: false,
-                                financial_reports: false,
-                                projects: true,
-                                workers: true,
-                                companies: false,
-                                users: false,
-                                sessions: false,
-                                print: true,
-                                dashTopCards: true,
-                                dashCollection: true,
-                                dashPulse: true,
-                                dashLateClients: true,
-                                dashLastReceipts: true,
-                                dashUpcomingPaid: true,
-                              });
-                            }
-                          }}
+                              } else if (newRole === "supervisor") {
+                                setUPerms({
+                                  attendance: true,
+                                  messages: true,
+                                  spreadsheets: true,
+                                  dashboard: true,
+                                  installmentsView: true,
+                                  installmentsAdd: true,
+                                  installmentsEdit: true,
+                                  installmentsDelete: false,
+                                  quotes: true,
+                                  receipts: true,
+                                  payments: true,
+                                  expenses: true,
+                                  treasury: false,
+                                  financial_reports: false,
+                                  projects: true,
+                                  workers: true,
+                                  companies: false,
+                                  users: false,
+                                  sessions: false,
+                                  print: true,
+                                  dashTopCards: true,
+                                  dashCollection: true,
+                                  dashPulse: true,
+                                  dashLateClients: true,
+                                  dashLastReceipts: true,
+                                  dashUpcomingPaid: true,
+                                });
+                              } else if (newRole === "admin" || newRole === "maintenance") {
+                                if (newRole === "maintenance") {
+                                  setUCompanyId("maintenance_pool");
+                                }
+                                const fullFlags = Object.fromEntries(
+                                  Object.entries(COMPANY_MANAGER_FULL_PERMS).filter(([k]) => k !== "region" && k !== "worker_id")
+                                ) as Record<string, boolean>;
+                                setUPerms((prev) => ({
+                                  ...prev,
+                                  ...fullFlags,
+                                }));
+                              }
+                            }}
                           className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none text-slate-950 bg-white"
                         >
                           <option value="employee" className="text-slate-950">👨‍💼 موظف فرع محدود</option>
                           <option value="cashier" className="text-slate-950">💰 كاشير / محاسب صندوق (تحصيل وسندات وخزينة)</option>
                           <option value="supervisor" className="text-slate-950">🕵️‍♂️ مشرف مكتب عام / رئيسي</option>
                           <option value="admin" className="text-slate-950">🏛️ المدير العام للشركة / المؤسسة</option>
+                          {isGlobalSuperAdmin(currentUser) && (
+                            <option value="maintenance" className="text-slate-950">🛠️ موظف صيانة مخصّص (يدخل فقط عند فتح خانة الصيانة)</option>
+                          )}
                         </select>
                       </div>
 
@@ -13233,17 +13905,26 @@ CREATE TABLE extracts (
                       </div>
 
                       <div className="space-y-1">
-                        <label className="text-[10px] text-slate-400 font-black block">🏢 الشركة / المؤسسة التابع لها الحساب *</label>
+                        <label className="text-[10px] text-slate-400 font-black block">🏢 الشركة / المؤسسة التابع لها الحساب {uRole !== "maintenance" ? "*" : ""}</label>
                         <select
-                          required
-                          value={uCompanyId}
+                          required={uRole !== "maintenance"}
+                          disabled={uRole === "maintenance"}
+                          value={uRole === "maintenance" ? "maintenance_pool" : uCompanyId}
                           onChange={(e) => setUCompanyId(e.target.value)}
-                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none text-slate-950 bg-white font-sans"
+                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none text-slate-950 bg-white font-sans disabled:opacity-75"
                         >
-                          <option value="" className="text-slate-950">اختر الشركة أو المؤسسة التابع لها الحساب...</option>
-                          {getAuthorizedCompanies().map((c) => (
-                            <option key={c.id} value={c.id} className="text-slate-950 font-bold">🏢 {c.name}</option>
-                          ))}
+                          {uRole === "maintenance" ? (
+                            <option value="maintenance_pool" className="text-slate-950 font-bold">
+                              🛠️ طاقم الصيانة المركزية (التخصيص يتم حسب خانة الصيانة المفتوحة)
+                            </option>
+                          ) : (
+                            <>
+                              <option value="" className="text-slate-950">اختر الشركة أو المؤسسة التابع لها الحساب...</option>
+                              {getAuthorizedCompanies().map((c) => (
+                                <option key={c.id} value={c.id} className="text-slate-950 font-bold">🏢 {c.name}</option>
+                              ))}
+                            </>
+                          )}
                         </select>
                       </div>
 
@@ -13793,11 +14474,13 @@ CREATE TABLE extracts (
                               <span className="px-2.5 py-0.5 rounded text-[10px] bg-slate-800 text-amber-400 font-bold border border-slate-700">
                                 {isGlobalSuperAdmin(u)
                                   ? "👑 السوبر أدمن (الوحيد)"
-                                  : u.account_type === "individual"
-                                    ? "👤 حساب أفراد مستقل"
-                                    : u.role === "admin"
-                                      ? `🏛️ المدير العام (${u.entity_type === "مؤسسة" ? "للمؤسسة" : "للشركة"})`
-                                      : (u.role === "cashier" ? "💰 كاشير / أمين صندوق" : (u.role === "supervisor" ? "🕵️‍♂️ مشرف مكتب عام" : "👨‍💼 موظف فرع"))}
+                                  : isMaintenanceStaff(u)
+                                    ? "🛠️ موظف صيانة مخصّص"
+                                    : u.account_type === "individual"
+                                      ? "👤 حساب أفراد مستقل"
+                                      : u.role === "admin"
+                                        ? `🏛️ المدير العام (${u.entity_type === "مؤسسة" ? "للمؤسسة" : "للشركة"})`
+                                        : (u.role === "cashier" ? "💰 كاشير / أمين صندوق" : (u.role === "supervisor" ? "🕵️‍♂️ مشرف مكتب عام" : "👨‍💼 موظف فرع"))}
                               </span>
                               <span className={`px-2 py-0.5 rounded text-[9px] font-bold font-sans ${u.status === "نشط" || !u.status ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25" : "bg-rose-500/10 text-rose-400 border border-rose-500/25"}`}>
                                 {u.status === "نشط" || !u.status ? "🟢 نشط" : "🔴 موقوف"}
@@ -13806,7 +14489,9 @@ CREATE TABLE extracts (
                           </td>
                           <td className="py-3 px-3">
                             <span className="block font-black text-indigo-400">
-                              🏢 {companies.find((c) => c.id === u.company_id)?.name || (isGlobalSuperAdmin(u) ? "مدير المنصة بالكامل (السوبر أدمن الوحيد)" : (u.account_type === "individual" ? "حساب أفراد مستقل" : "منشأة غير محددة"))}
+                              🏢 {isMaintenanceStaff(u)
+                                ? "🛠️ طاقم الصيانة (لا يدخل إلا عند فتح خانة الصيانة)"
+                                : (companies.find((c) => c.id === u.company_id)?.name || (isGlobalSuperAdmin(u) ? "مدير المنصة بالكامل (السوبر أدمن الوحيد)" : (u.account_type === "individual" ? "حساب أفراد مستقل" : "منشأة غير محددة")))}
                             </span>
                             <span className="block text-[10px] text-slate-500 font-bold mt-0.5 font-sans">
                               📍 النطاق: {permissionsObj.region || "كامل فروع المملكة"}
@@ -13842,7 +14527,7 @@ CREATE TABLE extracts (
                                 setUCode(u.code || "");
                                 setUPass(u.password || "");
                                 setUWorkerId(effectiveWorkerId || "");
-                                setURole(u.role || "employee");
+                                setURole(isMaintenanceStaff(u) ? "maintenance" : (u.role || "employee"));
                                 setUCompanyId(u.company_id || "");
                                 setURegion(permissionsObj.region || "");
                                 setSelectedCompanyIdForPerms("global");
@@ -14659,7 +15344,7 @@ CREATE TABLE extracts (
                       {/* Header */}
                       <div className="flex justify-between items-center border-b-2 border-emerald-500 pb-4">
                         <div className="text-right">
-                          <h1 className="text-2xl font-black text-slate-900 tracking-tight">شركة عرب وورلد</h1>
+                          <h1 className="text-2xl font-black text-slate-900 tracking-tight">{companies.find((c) => c.id === r.company_id)?.name || "المنشأة المعتمدة"}</h1>
                           <p className="text-xs text-emerald-700 font-black mt-1">سندات القبض المالي والحلول الرقمية</p>
                         </div>
                         <div className="text-left leading-relaxed text-xs text-slate-800">
@@ -14751,7 +15436,7 @@ CREATE TABLE extracts (
 
                       {/* Footer */}
                       <div className="border-t border-slate-200 pt-3 text-center text-[10px] text-slate-500">
-                        حقوق التقسيط والمتابعة محفوظة لبرنامج عرب وورلد الرقمي • تم توليده ومزامنته بمصداقية عالية محاسبيًا.
+                        حقوق التقسيط والمتابعة محفوظة لـ {companies.find((c) => c.id === r.company_id)?.name || "المنشأة المعتمدة"} • تم توليده ومزامنته بمصداقية عالية محاسبيًا.
                       </div>
                     </div>
                   );
@@ -14821,8 +15506,8 @@ CREATE TABLE extracts (
           onClose={() => setShowAuthModal(false)}
           userCode={currentUser?.code || loginCode || "1001"}
           userName={currentUser?.name || loginCode || "الموظف المفوّض"}
-          userRole={currentUser?.role === "admin" ? "مدير النظام" : (currentUser?.role === "cashier" ? "كاشير / أمين صندوق" : "موظف")}
-          companyName={activeCompany?.name || "شركة عرب وورلد"}
+          userRole={isGlobalSuperAdmin(currentUser) ? "السوبر أدمن" : isMaintenanceStaff(currentUser) ? "موظف صيانة مخصّص" : currentUser?.role === "admin" ? "المدير العام" : (currentUser?.role === "cashier" ? "كاشير / أمين صندوق" : "موظف")}
+          companyName={activeCompany?.name || getAuthorizedCompanies()[0]?.name || "بوابة الحسابات السحابية"}
           showToast={showToast}
           onSuccess2FA={(userCode, totpCode) => {
             handleDirectLogin(userCode, totpCode, activeCompany?.id);

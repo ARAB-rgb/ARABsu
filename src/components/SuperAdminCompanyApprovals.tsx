@@ -17,7 +17,10 @@ import {
   AlertTriangle,
   Sparkles,
   KeyRound,
-  Edit3
+  Edit3,
+  Lock,
+  Wrench,
+  ShieldCheck
 } from "lucide-react";
 
 interface SuperAdminCompanyApprovalsProps {
@@ -27,6 +30,8 @@ interface SuperAdminCompanyApprovalsProps {
   onApproveCompany: (companyId: string) => Promise<void>;
   onRejectCompany: (companyId: string, reason?: string) => Promise<void>;
   onSwitchCompany?: (companyId: string) => void;
+  onAssignMaintenanceUser?: (companyId: string, staffUserId: string | null) => Promise<void>;
+  isCompanyStrictPrivate: (comp: Company) => boolean;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
@@ -37,12 +42,15 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
   onApproveCompany,
   onRejectCompany,
   onSwitchCompany,
+  onAssignMaintenanceUser,
+  isCompanyStrictPrivate,
   showToast,
 }) => {
-  const [activeTab, setActiveTab] = useState<"pending" | "approved" | "rejected">("pending");
+  const [activeTab, setActiveTab] = useState<"pending" | "approved" | "maintenance" | "rejected">("pending");
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [rejectModalComp, setRejectModalComp] = useState<Company | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
+  const [selectedStaffByComp, setSelectedStaffByComp] = useState<Record<string, string>>({});
 
   // Deduplicate companies by id to avoid duplicate React keys
   const uniqueCompanies = React.useMemo(() => {
@@ -63,6 +71,16 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
     (c) => !c.status || c.status === "نشط" || c.status === "active" || c.status === "معتمدة"
   );
   const rejectedCompanies = uniqueCompanies.filter((c) => c.status === "مرفوض");
+
+  const maintenanceOpenCompanies = approvedCompanies.filter((c) => c.maintenance_allowed === true);
+  const strictLockedCompanies = approvedCompanies.filter(
+    (c) => isCompanyStrictPrivate(c) && !c.maintenance_allowed
+  );
+  const maintenanceStaffList = users.filter(
+    (u) =>
+      (u.account_type === "maintenance_staff" || u.role === "maintenance") &&
+      (!u.status || u.status === "نشط")
+  );
 
   const handleApprove = async (company: Company) => {
     setProcessingId(company.id);
@@ -85,6 +103,16 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
     }
   };
 
+  const handleSaveStaffAssignment = async (companyId: string, staffId: string | null) => {
+    if (!onAssignMaintenanceUser) return;
+    setProcessingId(companyId);
+    try {
+      await onAssignMaintenanceUser(companyId, staffId);
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
   return (
     <div className="bg-slate-900/90 backdrop-blur-2xl border-2 border-amber-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 relative overflow-hidden" dir="rtl">
       {/* Royal Background glow */}
@@ -100,7 +128,7 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
             </span>
             <div>
               <h2 className="text-lg font-black text-white flex items-center gap-2">
-                <span>خانة السوبر أدمن — موافقات تسجيل الشركات الجديدة</span>
+                <span>خانة السوبر أدمن — موافقات تسجيل الشركات والخصوصية والصيانة</span>
                 {pendingCompanies.length > 0 && (
                   <span className="animate-pulse bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 font-black text-[11px] px-3 py-0.5 rounded-full shadow-md shadow-amber-500/20">
                     {pendingCompanies.length} طلب بانتظار موافقتك
@@ -108,7 +136,7 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
                 )}
               </h2>
               <p className="text-xs text-slate-400 font-medium">
-                الصلاحية الحصرية للسوبر أدمن لمراجعة واعتماد طلبات تأسيس المنشآت السحابية وتفعيل الحسابات رسمياً.
+                الصلاحية الحصرية للسوبر أدمن لمراجعة طلبات التأسيس وتخصيص موظفي الصيانة للشركات التي فعّلت خانة الصيانة فقط.
               </p>
             </div>
           </div>
@@ -124,6 +152,10 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
             <span className="text-[10px] text-emerald-400 font-bold block">معتمدة ونشطة</span>
             <span className="text-sm font-black text-emerald-300 font-mono">{approvedCompanies.length}</span>
           </div>
+          <div className="px-3 py-1.5 bg-cyan-500/10 border border-cyan-500/30 rounded-xl text-center">
+            <span className="text-[10px] text-cyan-400 font-bold block">صيانة مفتوحة</span>
+            <span className="text-sm font-black text-cyan-300 font-mono">{maintenanceOpenCompanies.length}</span>
+          </div>
           {rejectedCompanies.length > 0 && (
             <div className="px-3 py-1.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-center">
               <span className="text-[10px] text-rose-400 font-bold block">مرفوضة</span>
@@ -134,7 +166,7 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 border-b border-slate-800 pb-3">
+      <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
         <button
           onClick={() => setActiveTab("pending")}
           className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 cursor-pointer ${
@@ -166,6 +198,23 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
             activeTab === "approved" ? "bg-slate-950 text-emerald-400" : "bg-emerald-500/20 text-emerald-300"
           }`}>
             {approvedCompanies.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("maintenance")}
+          className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 cursor-pointer ${
+            activeTab === "maintenance"
+              ? "bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20"
+              : "bg-slate-950/60 hover:bg-slate-850 text-slate-300 border border-slate-800"
+          }`}
+        >
+          <span>🛠️</span>
+          <span>الصيانة وتخصيص الموظفين</span>
+          <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-mono ${
+            activeTab === "maintenance" ? "bg-slate-950 text-cyan-400" : "bg-cyan-500/20 text-cyan-300"
+          }`}>
+            {maintenanceOpenCompanies.length}
           </span>
         </button>
 
@@ -217,10 +266,13 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
                           🏢
                         </div>
                         <div>
-                          <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+                          <h3 className="text-base font-extrabold text-white flex items-center gap-2 flex-wrap">
                             <span>{comp.name}</span>
                             <span className="bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[10px] font-black px-2.5 py-0.5 rounded-full">
                               ⏳ بانتظار موافقة السوبر أدمن
+                            </span>
+                            <span className="bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                              🔒 خصوصية تامة تلقائية بعد الاعتماد
                             </span>
                           </h3>
                           <div className="flex items-center gap-3 text-xs text-slate-400 mt-0.5 font-mono">
@@ -326,7 +378,7 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
                       <div className="flex items-center gap-2 text-xs text-amber-400/90 font-bold">
                         <Sparkles className="w-4 h-4 shrink-0" />
-                        <span>عند الموافقة، سيتم تفعيل حساب المشرف وتدشين المنشأة رسمياً في المنظومة.</span>
+                        <span>عند الموافقة، سيتم تفعيل حساب المدير العام للمنشأة بوضع الخصوصية التامة (لا تدخلها الصيانة إلا بموافقة المدير).</span>
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -375,49 +427,268 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
       {activeTab === "approved" && (
         <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {approvedCompanies.map((comp) => (
-              <div
-                key={comp.id}
-                className="bg-slate-950/60 border border-slate-800 hover:border-emerald-500/30 transition-all rounded-2xl p-4 space-y-3 relative"
-              >
-                <div className="flex justify-between items-start">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-10 h-10 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-center text-emerald-400 font-black text-sm">
-                      🏢
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-black text-white">{comp.name}</h4>
-                      <span className="text-[10px] text-slate-400 font-mono">/{comp.slug}</span>
-                    </div>
-                  </div>
-                  <span className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[9px] font-black px-2 py-0.5 rounded-md">
-                    معتمدة ونشطة
-                  </span>
-                </div>
+            {approvedCompanies.map((comp) => {
+              const strictPrivate = isCompanyStrictPrivate(comp);
+              const maintOpen = comp.maintenance_allowed === true;
+              const isBlockedByPrivacy = strictPrivate && !maintOpen;
 
-                <div className="text-[11px] text-slate-400 space-y-1 font-sans">
-                  <div>المدير: <span className="text-white font-bold">{comp.manager || "غير محدد"}</span></div>
-                  <div>الهاتف: <span className="font-mono text-slate-200">{comp.phone || "-"}</span></div>
-                  <div>رأس المال: <span className="font-mono text-amber-300 font-bold">{Number(comp.capital || 0).toLocaleString("ar-SA")} ريال</span></div>
-                  {comp.approval_date && (
-                    <div className="text-[9px] text-slate-500 font-mono">
-                      اعتمدت بتاريخ: {new Date(comp.approval_date).toLocaleDateString("ar-SA")}
+              return (
+                <div
+                  key={comp.id}
+                  className={`bg-slate-950/60 border transition-all rounded-2xl p-4 space-y-3 relative ${
+                    isBlockedByPrivacy
+                      ? "border-emerald-500/30 hover:border-emerald-400/50"
+                      : "border-slate-800 hover:border-amber-500/30"
+                  }`}
+                >
+                  <div className="flex justify-between items-start gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-10 h-10 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-center text-emerald-400 font-black text-sm shrink-0">
+                        {isBlockedByPrivacy ? "🔒" : "🏢"}
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="text-xs font-black text-white truncate">{comp.name}</h4>
+                        <span className="text-[10px] text-slate-400 font-mono block truncate">/{comp.slug || comp.id}</span>
+                      </div>
                     </div>
+                    <span className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[9px] font-black px-2 py-0.5 rounded-md shrink-0">
+                      معتمدة ونشطة
+                    </span>
+                  </div>
+
+                  {/* Privacy & Maintenance Gate Badges */}
+                  <div className="flex flex-wrap gap-1.5">
+                    <span
+                      className={`text-[9px] font-black px-2 py-0.5 rounded-md border flex items-center gap-1 ${
+                        strictPrivate
+                          ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                          : "bg-slate-800/80 text-slate-300 border-slate-700"
+                      }`}
+                    >
+                      {strictPrivate ? <Lock className="w-2.5 h-2.5" /> : <ShieldCheck className="w-2.5 h-2.5" />}
+                      <span>{strictPrivate ? "خصوصية تامة" : "إدارة قياسية"}</span>
+                    </span>
+                    <span
+                      className={`text-[9px] font-black px-2 py-0.5 rounded-md border flex items-center gap-1 ${
+                        maintOpen
+                          ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
+                          : "bg-slate-900 text-slate-400 border-slate-800"
+                      }`}
+                    >
+                      <Wrench className="w-2.5 h-2.5" />
+                      <span>{maintOpen ? "الصيانة مفعّلة" : "الصيانة مغلقة"}</span>
+                    </span>
+                  </div>
+
+                  <div className="text-[11px] text-slate-400 space-y-1 font-sans">
+                    <div>المدير: <span className="text-white font-bold">{comp.manager || "غير محدد"}</span></div>
+                    <div>الهاتف: <span className="font-mono text-slate-200">{comp.phone || "-"}</span></div>
+                    <div>
+                      رأس المال:{" "}
+                      {isBlockedByPrivacy ? (
+                        <span className="text-emerald-300 font-bold">🔒 محمي بالخصوصية التامة</span>
+                      ) : (
+                        <span className="font-mono text-amber-300 font-bold">
+                          {Number(comp.capital || 0).toLocaleString("ar-SA")} ريال
+                        </span>
+                      )}
+                    </div>
+                    {comp.assigned_maintenance_user_name && maintOpen && (
+                      <div className="text-[10px] text-cyan-300 font-bold">
+                        🛠️ موظف الصيانة المخصّص: {comp.assigned_maintenance_user_name}
+                      </div>
+                    )}
+                    {comp.approval_date && (
+                      <div className="text-[9px] text-slate-500 font-mono">
+                        اعتمدت بتاريخ: {new Date(comp.approval_date).toLocaleDateString("ar-SA")}
+                      </div>
+                    )}
+                  </div>
+
+                  {isBlockedByPrivacy ? (
+                    <div className="w-full mt-2 py-2 px-3 bg-emerald-950/30 border border-emerald-500/25 text-emerald-300 text-[10px] font-black rounded-xl flex items-center justify-center gap-1.5 text-center leading-relaxed">
+                      <Lock className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+                      <span>محجوب بالخصوصية التامة — لا يمكن الدخول إلا بعد تفعيل خانة الصيانة من مدير الشركة</span>
+                    </div>
+                  ) : (
+                    onSwitchCompany && (
+                      <button
+                        onClick={() => onSwitchCompany(comp.id)}
+                        className="w-full mt-2 py-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-amber-400 text-[10px] font-black rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <span>{maintOpen ? "🛠️ الدخول للشركة (خانة الصيانة مفعّلة)" : "🏢 الدخول للشركة كمدير عام"}</span>
+                        <ExternalLink className="w-3 h-3 text-amber-400" />
+                      </button>
+                    )
                   )}
                 </div>
-
-                {onSwitchCompany && (
-                  <button
-                    onClick={() => onSwitchCompany(comp.id)}
-                    className="w-full mt-2 py-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-amber-400 text-[10px] font-black rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <span>🏢 الدخول للشركة كمدير عام</span>
-                    <ExternalLink className="w-3 h-3 text-amber-400" />
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
+        </div>
+      )}
+
+      {/* Tab 3: Maintenance Gate & Staff Assignment */}
+      {activeTab === "maintenance" && (
+        <div className="space-y-5">
+          <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <h4 className="text-xs font-black text-cyan-300 flex items-center gap-1.5">
+                <Wrench className="w-4 h-4" />
+                <span>إدارة الصيانة المصرّح بها وتخصيص موظفي الصيانة</span>
+              </h4>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                لا يظهر هنا كشركة متاحة للدخول إلا المنشآت التي قام مديرها العام بتفعيل <b>خانة الصيانة</b>. يمكنك تخصيص موظف صيانة لكل شركة مفعّلة، وبمجرد إغلاق مدير الشركة للخانة ينقطع وصول الصيانة فوراً.
+              </p>
+            </div>
+            <div className="px-3 py-2 bg-slate-950/70 border border-cyan-500/30 rounded-xl text-center shrink-0">
+              <span className="block text-[9px] text-cyan-400 font-bold">موظفو الصيانة النشطون</span>
+              <span className="block text-sm font-black text-white font-mono">{maintenanceStaffList.length}</span>
+            </div>
+          </div>
+
+          {maintenanceStaffList.length === 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 text-xs text-amber-200 font-bold flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                لا يوجد حسابات بمسمى «موظف صيانة مخصّص» حتى الآن. انتقل إلى تبويب <b>الموظفين والصلاحية</b> بالأسفل ثم اختر <b>«🛠️ تجهيز موظف صيانة مخصّص»</b> لإنشاء حساب صيانة وإسناده هنا.
+              </span>
+            </div>
+          )}
+
+          {maintenanceOpenCompanies.length === 0 ? (
+            <div className="text-center py-10 px-4 bg-slate-950/40 border border-dashed border-slate-800 rounded-3xl space-y-2">
+              <span className="text-3xl block">🔒</span>
+              <h4 className="text-sm font-black text-white">لا توجد شركات فتحت خانة الصيانة حالياً</h4>
+              <p className="text-xs text-slate-400 max-w-md mx-auto">
+                جميع الشركات ذات الخصوصية التامة مغلقة حالياً. عندما يطلب مدير أي شركة الصيانة من إعدادات شركته ستظهر هنا فوراً لتخصيص موظف صيانة لها.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {maintenanceOpenCompanies.map((comp) => {
+                const isProc = processingId === comp.id;
+                const currentSelectedId =
+                  selectedStaffByComp[comp.id] !== undefined
+                    ? selectedStaffByComp[comp.id]
+                    : (comp.assigned_maintenance_user_id || "");
+
+                return (
+                  <div
+                    key={comp.id}
+                    className="bg-slate-950/70 border-2 border-cyan-500/35 rounded-2xl p-4 space-y-3.5 shadow-lg"
+                  >
+                    <div className="flex justify-between items-start gap-2 border-b border-slate-800 pb-3">
+                      <div>
+                        <h4 className="text-sm font-black text-white flex items-center gap-2">
+                          <span>🛠️ {comp.name}</span>
+                        </h4>
+                        <span className="text-[10px] text-slate-400 font-mono block">/{comp.slug || comp.id}</span>
+                      </div>
+                      <span className="px-2.5 py-0.5 bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 rounded-lg text-[10px] font-black">
+                        خانة الصيانة مفعّلة
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-3 space-y-1.5 text-[11px]">
+                      <div className="text-slate-300">
+                        <span className="text-slate-400 font-bold">ملاحظة المشكلة / السبب من مدير الشركة: </span>
+                        <span className="text-amber-300 font-bold">{comp.maintenance_note || "لم يتم كتابة تفاصيل إضافية"}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-3 text-[10px] text-slate-400 font-mono">
+                        {comp.maintenance_enabled_by && <span>المفعّل: {comp.maintenance_enabled_by}</span>}
+                        {comp.maintenance_enabled_at && (
+                          <span>الوقت: {new Date(comp.maintenance_enabled_at).toLocaleString("ar-SA")}</span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-emerald-300 font-bold pt-1">
+                        موظف الصيانة المخصّص حالياً:{" "}
+                        <span className="text-white">
+                          {comp.assigned_maintenance_user_name || "لم يتم تخصيص موظف صيانة بعد"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-300 block">
+                        تخصيص موظف صيانة لدخول هذه الشركة ومعالجة المشكلة:
+                      </label>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <select
+                          value={currentSelectedId}
+                          onChange={(e) =>
+                            setSelectedStaffByComp((prev) => ({ ...prev, [comp.id]: e.target.value }))
+                          }
+                          className="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-cyan-400"
+                        >
+                          <option value="">-- بدون تخصيص موظف --</option>
+                          {maintenanceStaffList.map((staff) => (
+                            <option key={staff.id} value={staff.id}>
+                              🛠️ {staff.name} (كود: {staff.code})
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={isProc}
+                          onClick={() => handleSaveStaffAssignment(comp.id, currentSelectedId || null)}
+                          className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black rounded-xl text-xs transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          {isProc ? "جاري الحفظ..." : "حفظ التخصيص"}
+                        </button>
+                        {comp.assigned_maintenance_user_id && (
+                          <button
+                            type="button"
+                            disabled={isProc}
+                            onClick={() => {
+                              setSelectedStaffByComp((prev) => ({ ...prev, [comp.id]: "" }));
+                              handleSaveStaffAssignment(comp.id, null);
+                            }}
+                            className="px-3 py-2 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 font-bold rounded-xl text-xs transition-all cursor-pointer disabled:opacity-50"
+                          >
+                            سحب
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {onSwitchCompany && (
+                      <button
+                        type="button"
+                        onClick={() => onSwitchCompany(comp.id)}
+                        className="w-full py-2 bg-slate-900 hover:bg-slate-800 border border-cyan-500/30 text-cyan-300 font-black text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <span>🛠️ الدخول للمنشأة لمعالجة المشاكل</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {strictLockedCompanies.length > 0 && (
+            <div className="space-y-2 pt-2 border-t border-slate-800">
+              <h5 className="text-xs font-black text-emerald-300 flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5" />
+                <span>منشآت محمية بالخصوصية التامة (خانة الصيانة مغلقة — {strictLockedCompanies.length}):</span>
+              </h5>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                {strictLockedCompanies.map((c) => (
+                  <div
+                    key={c.id}
+                    className="bg-slate-950/50 border border-emerald-500/20 rounded-xl px-3 py-2.5 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span className="font-bold text-slate-200 truncate">🏢 {c.name}</span>
+                    <span className="text-[10px] font-black text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 rounded-md shrink-0">
+                      🔒 صيانة مغلقة
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -1287,6 +1287,7 @@ export function SaasLandingPortal({
           userCode={loginCode || "1001"}
           userName={loginCode || "المستخدم"}
           showToast={showToast}
+          hideLiveCodePreview={true}
           onSuccess2FA={(userCode, totpCode) => {
             if (userCode) setLoginCode(userCode);
             if (handleDirectLogin) {

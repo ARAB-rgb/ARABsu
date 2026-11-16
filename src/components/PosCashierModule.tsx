@@ -229,15 +229,15 @@ export function PosCashierModule({
       ? currentUser.company_id
       : selectedCompanyId && selectedCompanyId !== "all"
       ? selectedCompanyId
-      : companies[0]?.id || "arab_world";
+      : companies[0]?.id || "";
 
   const activeCompany = companies.find(c => c.id === effectiveCompanyId) || companies[0] || {
-    id: "arab_world",
-    name: "شركة عرب وورلد للمقاولات والتجارة",
-    tax_no: "300099988800003",
-    commercial_register: "1010777555",
-    phone: "0556446888",
-    address: "المملكة العربية السعودية - الرياض"
+    id: effectiveCompanyId || "company",
+    name: "المنشأة المعتمدة",
+    tax_no: "",
+    commercial_register: "",
+    phone: "",
+    address: "المملكة العربية السعودية"
   };
 
   // Resolve Company Configuration (or construct standard defaults)

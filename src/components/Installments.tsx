@@ -601,13 +601,13 @@ export const Installments: React.FC<InstallmentsProps> = ({
   const handleExportClientStatementPDF = (item: Installment) => {
     if (!item) return;
 
-    const targetCompId = item.company_id || "arab_world";
-    const comp = (companies && companies.find(c => c.id === targetCompId)) || (companies && companies[0]);
-    const compName = comp?.name || "شركة الأعمال المتطورة";
-    const compLogo = localStorage.getItem(`aw_company_logo_${targetCompId}`) || "";
-    const crNumber = comp?.commercial_register || comp?.record_no || "1010777555";
+    const targetCompId = item.company_id || "";
+    const comp = companies?.find(c => c.id === targetCompId);
+    const compName = comp?.name || "المنشأة المعتمدة";
+    const compLogo = (targetCompId ? localStorage.getItem(`aw_company_logo_${targetCompId}`) : "") || comp?.logo_url || "";
+    const crNumber = comp?.commercial_register || comp?.record_no || "";
     const taxNumber = comp?.tax_no || "لا يوجد";
-    const phone = comp?.phone || "0556446888";
+    const phone = comp?.phone || "";
     const address = comp?.address || "المملكة العربية السعودية";
 
     // 1. Gather all receipts linked to this contract

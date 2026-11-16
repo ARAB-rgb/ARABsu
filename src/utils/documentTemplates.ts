@@ -499,12 +499,12 @@ export function buildQuotePrintHtml(params: {
   const pMid = hexToRgba(p, 0.12);
   const aSoft = hexToRgba(a, 0.12);
 
-  const companyName = company?.name || "شركة عرب وورلد للمقاولات";
+  const companyName = company?.name || (isArabWorld ? "شركة عرب وورلد للمقاولات" : "الشركة المعتمدة");
   const crNumber = company?.commercial_register || company?.record_no || "";
   const taxNumber = company?.tax_no || "";
-  const compPhone = company?.phone || "0539853287";
+  const compPhone = company?.phone || (isArabWorld ? "0539853287" : "");
   const compAddress = company?.address || "المملكة العربية السعودية";
-  const compEmail = company?.email || "info@arab1000.online";
+  const compEmail = company?.email || (isArabWorld ? "info@arab1000.online" : "");
   const compWebsite = company?.website || "";
   const compActivity = company?.activity || company?.sub_title || "";
   const compBank = company?.bank_name || "";
@@ -898,9 +898,9 @@ export function buildOfficialLetterPrintHtml(params: {
 
   const crNumber = company?.commercial_register || company?.record_no || "";
   const taxNumber = company?.tax_no || "";
-  const compPhone = company?.phone || "0539853287";
+  const compPhone = company?.phone || (isArabWorld ? "0539853287" : "");
   const compAddress = company?.address || "المملكة العربية السعودية";
-  const compEmail = company?.email || "info@arab1000.online";
+  const compEmail = company?.email || (isArabWorld ? "info@arab1000.online" : "");
   const compWebsite = company?.website || "";
   const compActivity = company?.activity || company?.sub_title || "";
 

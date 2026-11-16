@@ -333,6 +333,48 @@ class SupabaseEmulationChain {
           const key = item?.id ? String(item.id) : `__fs_${mergedMap.size}`;
           if (!mergedMap.has(key)) {
             mergedMap.set(key, item);
+          } else if (this.table === "companies") {
+            const existing = mergedMap.get(key);
+            const extKeys = [
+              "registration_source",
+              "privacy_mode",
+              "maintenance_allowed",
+              "maintenance_note",
+              "maintenance_enabled_at",
+              "maintenance_enabled_by",
+              "assigned_maintenance_user_id",
+              "assigned_maintenance_user_name",
+              "logo_url",
+              "letterhead_url",
+              "stamp_url",
+              "signature_url",
+              "quote_template",
+              "quote_primary_color",
+              "quote_accent_color",
+              "letterhead_template",
+              "letterhead_primary_color",
+              "letterhead_accent_color",
+              "entity_type",
+              "slug",
+              "treasuries",
+            ];
+            const patched = { ...existing };
+            for (const ek of extKeys) {
+              if (item[ek] !== undefined && item[ek] !== null) {
+                patched[ek] = item[ek];
+              }
+            }
+            mergedMap.set(key, patched);
+          } else if (this.table === "users") {
+            const existing = mergedMap.get(key);
+            const patched = { ...existing };
+            if (item.account_type !== undefined && item.account_type !== null) {
+              patched.account_type = item.account_type;
+            }
+            if (item.entity_type !== undefined && item.entity_type !== null) {
+              patched.entity_type = item.entity_type;
+            }
+            mergedMap.set(key, patched);
           }
         }
 

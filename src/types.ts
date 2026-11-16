@@ -114,7 +114,7 @@ export interface User {
   name: string;
   code: string;
   password?: string;
-  role: "admin" | "employee" | "supervisor" | "cashier";
+  role: "admin" | "employee" | "supervisor" | "cashier" | "maintenance";
   perms: UserPerms;
   company_perms?: Record<string, UserPerms>;
   worker_id?: string;
@@ -132,7 +132,7 @@ export interface User {
   requested_company_address?: string;
   requested_company_record_no?: string;
   requested_company_tax_no?: string;
-  account_type?: "individual" | "company_member" | "company_manager" | "super_admin";
+  account_type?: "individual" | "company_member" | "company_manager" | "super_admin" | "maintenance_staff";
   entity_type?: "شركة" | "مؤسسة";
 }
 
@@ -372,6 +372,14 @@ export interface Company {
   approved_by?: string;     // اسم السوبر أدمن المعتمد
   rejection_reason?: string;// سبب رفض الطلب إن وجد
   entity_type?: "شركة" | "مؤسسة";
+  registration_source?: "self_registered" | "google_registered" | "super_admin_created" | string;
+  privacy_mode?: "strict_private" | "standard" | string;
+  maintenance_allowed?: boolean;
+  maintenance_note?: string;
+  maintenance_enabled_at?: string;
+  maintenance_enabled_by?: string;
+  assigned_maintenance_user_id?: string | null;
+  assigned_maintenance_user_name?: string | null;
   created_at?: string;
 }
 

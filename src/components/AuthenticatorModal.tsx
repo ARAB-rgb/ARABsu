@@ -26,6 +26,7 @@ interface AuthenticatorModalProps {
   companyName?: string;
   onSuccess2FA?: (userCode: string, totpCode?: string) => void;
   showToast?: (msg: string, type?: "success" | "error" | "info") => void;
+  hideLiveCodePreview?: boolean;
 }
 
 // Generate deterministic secret key for Google / Microsoft Authenticator app
@@ -64,9 +65,10 @@ export const AuthenticatorModal: React.FC<AuthenticatorModalProps> = ({
   userRole = "موظف",
   companyName = "عرب وورلد ERP",
   onSuccess2FA,
-  showToast
+  showToast,
+  hideLiveCodePreview = false
 }) => {
-  const [activeTab, setActiveTab] = useState<"setup" | "verify" | "badge">("setup");
+  const [activeTab, setActiveTab] = useState<"setup" | "verify" | "badge">(hideLiveCodePreview ? "verify" : "setup");
   const [otpInput, setOtpInput] = useState<string>("");
   const [copiedSecret, setCopiedSecret] = useState<boolean>(false);
   const [copiedTotp, setCopiedTotp] = useState<boolean>(false);
@@ -74,6 +76,12 @@ export const AuthenticatorModal: React.FC<AuthenticatorModalProps> = ({
     code: "------",
     secondsRemaining: 30
   });
+
+  useEffect(() => {
+    if (hideLiveCodePreview && activeTab !== "verify") {
+      setActiveTab("verify");
+    }
+  }, [hideLiveCodePreview, activeTab, isOpen]);
 
   const secretKey = getAuthenticatorSecret(userCode || "1001");
   // Standard OTP Auth URI for Google Authenticator & Microsoft Authenticator
@@ -114,18 +122,9 @@ export const AuthenticatorModal: React.FC<AuthenticatorModalProps> = ({
     e.preventDefault();
     const cleanInput = otpInput.trim().replace(/\s+/g, "");
 
-    const adminCodes = ["1007363904", "0564468888", "139213", "13921313", "الادمن", "admin", "المدير", "المدير العام", "سلطان العاصمي"];
-    const isAdmin = adminCodes.includes(cleanInput) || adminCodes.includes(userCode);
-
-    // Check matching current TOTP or master bypass code or admin codes or non-empty input
-    if (
-      cleanInput === totpData.code ||
-      cleanInput === "123456" ||
-      cleanInput === userCode ||
-      isAdmin ||
-      (cleanInput.length >= 4 && cleanInput.length <= 15)
-    ) {
-      showToast?.("✅ تم التحقق من رمز Authenticator بنجاح! جاري تسجيل الدخول...", "success");
+    // Strictly verify exact 6-digit live TOTP match
+    if (/^\d{6}$/.test(cleanInput) && cleanInput === totpData.code) {
+      showToast?.("✅ تم التحقق من رمز Authenticator بنجاح! جاري المتابعة...", "success");
       onSuccess2FA?.(userCode, cleanInput);
       onClose();
     } else {
@@ -169,43 +168,45 @@ export const AuthenticatorModal: React.FC<AuthenticatorModalProps> = ({
         </div>
 
         {/* Modal Navigation Tabs */}
-        <div className="flex border-b border-white/5 bg-slate-950/60 p-1.5 gap-1 print:hidden">
-          <button
-            onClick={() => setActiveTab("setup")}
-            className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              activeTab === "setup"
-                ? "bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/10"
-                : "text-slate-400 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <QrCode className="w-3.5 h-3.5" />
-            <span>مسح الباركود (QR)</span>
-          </button>
+        {!hideLiveCodePreview && (
+          <div className="flex border-b border-white/5 bg-slate-950/60 p-1.5 gap-1 print:hidden">
+            <button
+              onClick={() => setActiveTab("setup")}
+              className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                activeTab === "setup"
+                  ? "bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/10"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span>مسح الباركود (QR)</span>
+            </button>
 
-          <button
-            onClick={() => setActiveTab("verify")}
-            className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              activeTab === "verify"
-                ? "bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/10"
-                : "text-slate-400 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <KeyRound className="w-3.5 h-3.5" />
-            <span>إدخال الرمز (6 أرقام)</span>
-          </button>
+            <button
+              onClick={() => setActiveTab("verify")}
+              className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                activeTab === "verify"
+                  ? "bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/10"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              <span>إدخال الرمز (6 أرقام)</span>
+            </button>
 
-          <button
-            onClick={() => setActiveTab("badge")}
-            className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              activeTab === "badge"
-                ? "bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/10"
-                : "text-slate-400 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <Printer className="w-3.5 h-3.5" />
-            <span>بطاقة الموظف (للطباعة)</span>
-          </button>
-        </div>
+            <button
+              onClick={() => setActiveTab("badge")}
+              className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                activeTab === "badge"
+                  ? "bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/10"
+                  : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>بطاقة الموظف (للطباعة)</span>
+            </button>
+          </div>
+        )}
 
         {/* Modal Body */}
         <div className="p-6 space-y-6">
@@ -332,13 +333,15 @@ export const AuthenticatorModal: React.FC<AuthenticatorModalProps> = ({
                 </div>
               </div>
 
-              {/* Quick test suggestion note */}
-              <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3 flex items-start gap-2 text-right">
-                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <p className="text-[10px] text-slate-300 leading-relaxed">
-                  تنويه: يمكنك استخدام الرمز الحالي المولد من التطبيق أو الرمز التجريبي المباشر: <b className="text-amber-300 font-mono font-bold">{totpData.code}</b> للتحقق الفوري.
-                </p>
-              </div>
+              {/* Quick test suggestion note - hidden on unauthenticated login screens */}
+              {!hideLiveCodePreview && (
+                <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3 flex items-start gap-2 text-right">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <p className="text-[10px] text-slate-300 leading-relaxed">
+                    تنويه: يمكنك استخدام الرمز الحالي المولد من التطبيق أو الرمز المباشر: <b className="text-amber-300 font-mono font-bold">{totpData.code}</b> للتحقق الفوري.
+                  </p>
+                </div>
+              )}
 
               <div className="flex items-center gap-3">
                 <button
@@ -349,13 +352,15 @@ export const AuthenticatorModal: React.FC<AuthenticatorModalProps> = ({
                   <span>تأكيد ومصادقة الدخول</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => setActiveTab("setup")}
-                  className="px-4 py-3 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 font-bold rounded-2xl text-xs transition-all cursor-pointer"
-                >
-                  العودة للباركود
-                </button>
+                {!hideLiveCodePreview && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("setup")}
+                    className="px-4 py-3 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 font-bold rounded-2xl text-xs transition-all cursor-pointer"
+                  >
+                    العودة للباركود
+                  </button>
+                )}
               </div>
             </form>
           )}

@@ -107,7 +107,7 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
     if (activeCompanyId && activeCompanyId !== "all") return activeCompanyId;
     if (currentUser?.company_id) return currentUser.company_id;
     if (companies && companies.length > 0) return companies[0].id;
-    return "arab_world";
+    return isSuperAdmin ? "arab_world" : "";
   };
 
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>(resolveTargetCompId());
@@ -164,8 +164,8 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
   const authorizedCompanies = useMemo(() => {
     if (!currentUser) return companies;
     if (isSuperAdmin) return companies;
-    const userCompany = currentUser.company_id || "arab_world";
-    return companies.filter((c) => c.id === userCompany);
+    const userCompany = currentUser.company_id || "";
+    return userCompany ? companies.filter((c) => c.id === userCompany) : [];
   }, [currentUser, companies, isSuperAdmin]);
 
   // Reset filters (preserves selected company)
