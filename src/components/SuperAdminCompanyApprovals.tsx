@@ -44,14 +44,25 @@ export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProp
   const [rejectModalComp, setRejectModalComp] = useState<Company | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
 
+  // Deduplicate companies by id to avoid duplicate React keys
+  const uniqueCompanies = React.useMemo(() => {
+    const map = new Map<string, Company>();
+    for (const c of companies) {
+      if (c && c.id && !map.has(c.id)) {
+        map.set(c.id, c);
+      }
+    }
+    return Array.from(map.values());
+  }, [companies]);
+
   // Categorize companies
-  const pendingCompanies = companies.filter(
+  const pendingCompanies = uniqueCompanies.filter(
     (c) => c.status === "بانتظار موافقة السوبر أدمن" || c.status === "pending_approval"
   );
-  const approvedCompanies = companies.filter(
+  const approvedCompanies = uniqueCompanies.filter(
     (c) => !c.status || c.status === "نشط" || c.status === "active" || c.status === "معتمدة"
   );
-  const rejectedCompanies = companies.filter((c) => c.status === "مرفوض");
+  const rejectedCompanies = uniqueCompanies.filter((c) => c.status === "مرفوض");
 
   const handleApprove = async (company: Company) => {
     setProcessingId(company.id);

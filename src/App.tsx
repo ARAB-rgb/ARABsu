@@ -10,7 +10,7 @@ import {
   Settings, LogOut, Calendar, MapPin, User, Phone, Shield, Search, Plus,
   Edit2, Trash2, Download, AlertTriangle, Sparkles, Clock, RefreshCw, Key, Printer, Building, ChevronDown, ChevronUp,
   PieChart, ShieldAlert, ShieldCheck, List, Map as MapIcon, Filter, Eye, FileSignature, Mail,
-  ShoppingCart
+  ShoppingCart, MessageSquare, FileSpreadsheet
 } from "lucide-react";
 
 import { User as AuthUser, UserPerms, CASHIER_DEFAULT_PERMS, Installment, Quote, OfficialLetter, Receipt, Payment, Expense, Project, Worker, DbSession, Company, Extract, AttendanceRecord } from "./types";
@@ -44,6 +44,8 @@ import { AuthenticatorModal } from "./components/AuthenticatorModal";
 import { NotFound404 } from "./components/NotFound404";
 import { SubcontractsManager } from "./components/SubcontractsManager";
 import { PosCashierModule } from "./components/PosCashierModule";
+import { InternalMessaging } from "./components/InternalMessaging";
+import { CompanySpreadsheets } from "./components/CompanySpreadsheets";
 import { DocumentDesignSelector } from "./components/DocumentDesignSelector";
 import {
   QuoteTemplateId,
@@ -57,6 +59,45 @@ import {
   QUOTE_TEMPLATES,
   LETTERHEAD_TEMPLATES,
 } from "./utils/documentTemplates";
+
+const dedupeById = <T extends { id?: string | null }>(list: T[]): T[] => {
+  const map = new Map<string, T>();
+  for (const item of list) {
+    if (!item) continue;
+    const key = item.id ? String(item.id) : "";
+    if (!key) {
+      map.set(`__anon_${map.size}`, item);
+      continue;
+    }
+    if (!map.has(key)) {
+      map.set(key, item);
+    }
+  }
+  return Array.from(map.values());
+};
+
+const normalizeDigits = (val: string): string =>
+  String(val || "")
+    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)));
+
+const isCompanyApprovedStatus = (status?: string | null): boolean =>
+  !status || status === "نشط" || status === "active" || status === "معتمدة";
+
+const SUPER_ADMIN_CANONICAL_ID = "admin_1007363904";
+const SUPER_ADMIN_CANONICAL_CODE = "1007363904";
+const RESERVED_SUPER_ADMIN_CODES = ["1007363904", "0564468888", "139213", "13921313"];
+
+const isGlobalSuperAdmin = (u?: AuthUser | null): boolean => {
+  if (!u || u.role !== "admin") return false;
+  if (u.account_type === "individual" || u.account_type === "company_manager") return false;
+  // السوبر أدمن يكون واحد فقط على مستوى المنصة بالكامل
+  if (u.id === SUPER_ADMIN_CANONICAL_ID) return true;
+  if (u.account_type === "super_admin" && normalizeDigits(u.code || "").trim() === SUPER_ADMIN_CANONICAL_CODE) {
+    return true;
+  }
+  return false;
+};
 
 const compressAndResizeImage = (file: File, maxWidth = 800, maxHeight = 800, quality = 0.7): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -410,15 +451,19 @@ function PendingUserApprovalCard({
   companies,
   onApprove,
   onReject,
+  isSuperAdmin = false,
 }: {
   key?: React.Key;
   pendingUser: AuthUser;
   companies: Company[];
   onApprove: (userId: string, companyId: string, role: "admin" | "supervisor" | "employee" | "cashier", perms?: UserPerms) => Promise<void>;
   onReject: (userId: string) => Promise<void>;
+  isSuperAdmin?: boolean;
 }) {
   const [selectedCompId, setSelectedCompId] = useState<string>(
-    pendingUser.requested_company_name ? "CREATE_NEW" : (pendingUser.company_id || companies[0]?.id || "arab_world")
+    pendingUser.requested_company_name && isSuperAdmin
+      ? "CREATE_NEW"
+      : (pendingUser.company_id || companies[0]?.id || "arab_world")
   );
   const [selectedRole, setSelectedRole] = useState<"admin" | "supervisor" | "employee" | "cashier">(
     pendingUser.role || (pendingUser.requested_company_name ? "admin" : "employee")
@@ -486,12 +531,12 @@ function PendingUserApprovalCard({
             onChange={(e) => setSelectedCompId(e.target.value)}
             className="w-full h-9 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-amber-400 focus:outline-none cursor-pointer text-slate-950 bg-white"
           >
-            {pendingUser.requested_company_name && (
+            {pendingUser.requested_company_name && isSuperAdmin && (
               <option value="CREATE_NEW" className="text-slate-950 font-bold">
                 ✨ تأسيس واعتماد الشركة الجديدة ({pendingUser.requested_company_name})
               </option>
             )}
-            {companies.map((c) => (
+            {dedupeById(companies).map((c) => (
               <option key={c.id} value={c.id} className="text-slate-950">
                 🏢 {c.name} ({c.slug})
               </option>
@@ -578,14 +623,14 @@ export default function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
-  const navigateToSlug = (slug: string | null) => {
+  const navigateToSlug = (slug: string | null, options?: { logout?: boolean }) => {
     if (slug) {
       window.history.pushState({}, "", `/${slug}`);
     } else {
       window.history.pushState({}, "", `/`);
     }
     setActiveSlug(slug);
-    if (!slug) {
+    if (!slug && options?.logout) {
       setCurrentUser(null);
       localStorage.removeItem("aw_current_user");
     }
@@ -603,13 +648,41 @@ export default function App() {
     adminCode: string;
     adminPass: string;
     domain_extension?: string;
+    entity_type?: "شركة" | "مؤسسة";
   }) => {
     try {
-      const newCompanyId = `company_${companyData.slug}`;
+      const entityType: "شركة" | "مؤسسة" = companyData.entity_type === "مؤسسة" ? "مؤسسة" : "شركة";
+      const cleanAdminCode = normalizeDigits(companyData.adminCode).trim();
+      if (RESERVED_SUPER_ADMIN_CODES.includes(cleanAdminCode)) {
+        showToast("⚠️ هذا المعرّف محجوز لإدارة المنصة العليا! يرجى اختيار معرّف خاص بالمدير العام للمنشأة.", "error");
+        return false;
+      }
+
+      const cleanSlug = (companyData.slug || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+      if (!cleanSlug || cleanSlug.length < 2) {
+        showToast("يرجى إدخال رابط مخصص صالح للمنشأة!", "error");
+        return false;
+      }
+      const newCompanyId = `company_${cleanSlug}`;
+
+      const { data: dbCompanies } = await sb.from("companies").select("id, slug");
+      const allKnownCompanies = dedupeById([...companies, ...((dbCompanies as Company[]) || [])]);
+      const companyAlreadyExists = allKnownCompanies.some(
+        (c) =>
+          (c.id || "").toLowerCase() === newCompanyId.toLowerCase() ||
+          (c.id || "").toLowerCase() === cleanSlug ||
+          (c.slug || "").toLowerCase() === cleanSlug
+      );
+      if (companyAlreadyExists) {
+        showToast("⚠️ رابط المنشأة المختار مسجل مسبقاً! يرجى اختيار رابط آخر.", "error");
+        return false;
+      }
+
       const companyPayload: Company = {
         id: newCompanyId,
-        slug: companyData.slug,
+        slug: cleanSlug,
         name: companyData.name,
+        entity_type: entityType,
         record_no: companyData.record_no,
         commercial_register: companyData.record_no,
         tax_no: companyData.tax_no,
@@ -617,35 +690,37 @@ export default function App() {
         manager: companyData.manager,
         phone: companyData.phone,
         address: companyData.address,
-        domain: companyData.slug,
+        domain: cleanSlug,
         domain_extension: companyData.domain_extension || ".com",
-        website: `https://${companyData.slug}${companyData.domain_extension || ".com"}`,
-        email: `info@${companyData.slug}${companyData.domain_extension || ".com"}`,
+        website: `https://${cleanSlug}${companyData.domain_extension || ".com"}`,
+        email: `info@${cleanSlug}${companyData.domain_extension || ".com"}`,
         admin_code: companyData.adminCode,
         admin_pass: companyData.adminPass,
         status: "بانتظار موافقة السوبر أدمن", // <--- Dedicated pending status
-        notes: `الرقم الضريبي: ${companyData.tax_no} | رأس المال بالعقود: ${companyData.capital}`,
+        notes: `${entityType} | الرقم الضريبي: ${companyData.tax_no} | رأس المال بالعقود: ${companyData.capital}`,
         created_at: new Date().toISOString()
       };
 
       // 1. Insert Company into DB with pending status
       const { error: compError } = await sb.from("companies").insert(companyPayload);
       if (compError) {
-        showToast("فشل في تقديم طلب تسجيل الشركة بقاعدة البيانات!", "error");
+        showToast("فشل في تقديم طلب تسجيل المنشأة بقاعدة البيانات!", "error");
         return false;
       }
 
-      // 2. Insert Default Admin for this Company with pending status
+      // 2. Insert General Manager (المدير العام للشركة / المؤسسة) for this entity with pending status
       const defaultAdmin: AuthUser = {
-        id: `admin_${companyData.slug}`,
-        name: `مدير ${companyData.name}`,
-        code: companyData.adminCode,
+        id: `mgr_${cleanSlug}_${Date.now().toString(36)}`,
+        name: `${entityType === "مؤسسة" ? "المدير العام لمؤسسة" : "المدير العام لشركة"} ${companyData.name}`,
+        code: cleanAdminCode,
         password: companyData.adminPass,
         role: "admin",
+        account_type: "company_manager",
+        entity_type: entityType,
         company_id: newCompanyId,
         status: "بانتظار موافقة السوبر أدمن",
         requested_company_name: companyData.name,
-        requested_company_slug: companyData.slug,
+        requested_company_slug: cleanSlug,
         requested_company_manager: companyData.manager,
         requested_company_phone: companyData.phone,
         requested_company_capital: companyData.capital,
@@ -653,6 +728,7 @@ export default function App() {
         requested_company_record_no: companyData.record_no,
         requested_company_tax_no: companyData.tax_no,
         perms: {
+          pos: true,
           pos_cashier: true,
           pos_inventory: true,
           pos_purchases: true,
@@ -663,7 +739,10 @@ export default function App() {
           pos_products_edit: true,
           pos_products_delete: true,
           pos_settings: true,
+          messages: true,
+          spreadsheets: true,
           attendance: true,
+          dashboard: true,
           installmentsView: true,
           installmentsAdd: true,
           installmentsEdit: true,
@@ -695,22 +774,26 @@ export default function App() {
 
       const { error: userError } = await sb.from("users").insert(defaultAdmin);
       if (userError) {
-        showToast("فشل في إنشاء مستخدم المدير للمنشأة!", "error");
+        showToast("فشل في إنشاء مستخدم المدير العام للمنشأة!", "error");
         return false;
       }
 
       setCompanies(prev => [companyPayload, ...prev]);
       setUsers(prev => [defaultAdmin, ...prev]);
 
-      showToast(`تم إرسال طلب تأسيس «${companyData.name}» إلى خانة السوبر أدمن بنجاح!`, "success");
+      showToast(`تم إرسال طلب تأسيس ${entityType} «${companyData.name}» إلى خانة السوبر أدمن بنجاح!`, "success");
       return true;
     } catch (err: any) {
-      showToast(`فشل في تسجيل الشركة: ${err.message || err}`, "error");
+      showToast(`فشل في تسجيل المنشأة: ${err.message || err}`, "error");
       return false;
     }
   };
 
   const handleApproveCompany = async (companyId: string) => {
+    if (!isGlobalSuperAdmin(currentUser)) {
+      showToast("⚠️ صلاحية اعتماد الشركات الجديدة حصرية للسوبر أدمن فقط!", "error");
+      return;
+    }
     try {
       const target = companies.find(c => c.id === companyId);
       if (!target) return;
@@ -734,6 +817,10 @@ export default function App() {
   };
 
   const handleRejectCompany = async (companyId: string, reason?: string) => {
+    if (!isGlobalSuperAdmin(currentUser)) {
+      showToast("⚠️ صلاحية رفض طلبات الشركات حصرية للسوبر أدمن فقط!", "error");
+      return;
+    }
     try {
       const target = companies.find(c => c.id === companyId);
       if (!target) return;
@@ -755,7 +842,7 @@ export default function App() {
     }
   };
 
-  // Dedicated New User Registration Handler
+  // Dedicated New User / Individual / Company Registration Handler
   const handleRegisterUser = async (userData: {
     name: string;
     code: string;
@@ -763,7 +850,10 @@ export default function App() {
     phone?: string;
     email?: string;
     role: "cashier" | "employee" | "supervisor" | "admin";
+    account_type?: "individual" | "company_member" | "company_manager";
+    entity_type?: "شركة" | "مؤسسة";
     company_id?: string;
+    join_company_slug?: string;
     create_company?: boolean;
     company_name?: string;
     company_slug?: string;
@@ -775,80 +865,195 @@ export default function App() {
     company_city?: string;
     company_record_no?: string;
     company_tax_no?: string;
-  }): Promise<{ success: boolean; message?: string }> => {
+  }): Promise<{ success: boolean; message?: string; pendingApproval?: boolean; companyName?: string; companySlug?: string }> => {
     setIsLoading(true);
     try {
-      const cleanCode = userData.code.trim().toLowerCase();
+      const cleanCode = normalizeDigits(userData.code).trim().toLowerCase();
+
+      if (RESERVED_SUPER_ADMIN_CODES.includes(cleanCode)) {
+        showToast("⚠️ اسم المستخدم أو الكود محجوز للإدارة العليا! يرجى اختيار اسم مستخدم خاص بك.", "error");
+        return { success: false, message: "معرف محجوز للإدارة العليا." };
+      }
 
       // 1. Check if user code or phone already exists
       const { data: allUsers } = await sb.from("users").select("id, code, phone");
       const codeExists = (allUsers || []).some(
         (u: any) =>
-          (u.code || "").trim().toLowerCase() === cleanCode ||
-          (userData.phone && userData.phone.trim() && (u.phone || "").trim() === userData.phone.trim())
+          normalizeDigits(u.code || "").trim().toLowerCase() === cleanCode ||
+          (userData.phone && userData.phone.trim() && normalizeDigits(u.phone || "").trim() === normalizeDigits(userData.phone).trim())
       );
       if (codeExists) {
         showToast("⚠️ اسم المستخدم أو كود الدخول مسجل مسبقاً! يرجى اختيار اسم مستخدم آخر.", "error");
         return { success: false, message: "اسم المستخدم مسجل مسبقاً." };
       }
 
+      const newUserId = `usr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const isIndividual = userData.account_type === "individual" && !userData.create_company;
+      const entityType: "شركة" | "مؤسسة" = userData.entity_type === "مؤسسة" ? "مؤسسة" : "شركة";
+
       let finalCompId: string | null = userData.company_id || null;
       let finalRole: "admin" | "cashier" | "employee" | "supervisor" = userData.role;
+      let finalAccountType: AuthUser["account_type"] = "company_member";
+      let isCreatingPendingCompany = false;
+      let pendingCompanyName = "";
+      let pendingCompanySlug = "";
 
-      // 2. Handle new company creation if requested
-      if (userData.create_company) {
+      if (isIndividual) {
+        // Individual registration: personal isolated workspace (no company record in `companies` registry)
+        finalCompId = `indiv_${newUserId}`;
+        finalRole = "admin";
+        finalAccountType = "individual";
+      } else if (userData.create_company) {
+        // New Company / Establishment: General Manager + Pending Super Admin Approval
         const cleanSlug = (userData.company_slug || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
         if (!cleanSlug || cleanSlug.length < 2) {
-          showToast("يرجى إدخال رابط مخصص صالح للشركة!", "error");
+          showToast("يرجى إدخال رابط مخصص صالح للمنشأة!", "error");
           return { success: false, message: "رابط مخصص غير صالح." };
         }
 
-        const slugExists = companies.some(
-          (c) => (c.slug || "").toLowerCase() === cleanSlug || c.id.toLowerCase() === cleanSlug
+        const { data: dbCompanies } = await sb.from("companies").select("id, slug");
+        const allKnownCompanies = dedupeById([...companies, ...((dbCompanies as Company[]) || [])]);
+        const targetNewCompId = `company_${cleanSlug}`;
+        const slugExists = allKnownCompanies.some(
+          (c) =>
+            (c.slug || "").toLowerCase() === cleanSlug ||
+            (c.id || "").toLowerCase() === cleanSlug ||
+            (c.id || "").toLowerCase() === targetNewCompId.toLowerCase()
         );
         if (slugExists) {
-          showToast("رابط الشركة المخصص مستخدم مسبقاً! اختر اسماً آخر.", "error");
-          return { success: false, message: "رابط الشركة مستخدم مسبقاً." };
+          showToast("رابط المنشأة المخصص مستخدم مسبقاً! اختر اسماً آخر.", "error");
+          return { success: false, message: "رابط المنشأة مستخدم مسبقاً." };
         }
 
-        finalCompId = `company_${cleanSlug}`;
+        finalCompId = targetNewCompId;
+        pendingCompanyName = userData.company_name?.trim() || `${entityType} ${userData.name.trim()}`;
+        pendingCompanySlug = cleanSlug;
+        isCreatingPendingCompany = true;
+        finalRole = "admin";
+        finalAccountType = "company_manager";
+
         const newCompanyPayload: Company = {
           id: finalCompId,
           slug: cleanSlug,
-          name: userData.company_name?.trim() || `شركة ${userData.name.trim()}`,
+          name: pendingCompanyName,
+          entity_type: entityType,
           manager: userData.company_manager?.trim() || userData.name.trim(),
           phone: userData.phone?.trim() || "",
-          domain: userData.company_domain || `${cleanSlug}.com`,
+          domain: userData.company_domain || `${cleanSlug}${userData.company_domain_ext || ".com"}`,
           domain_extension: userData.company_domain_ext || ".com",
-          website: userData.company_website || `https://${cleanSlug}.com`,
+          website: userData.company_website || `https://${cleanSlug}${userData.company_domain_ext || ".com"}`,
           city: userData.company_city || "الرياض",
           commercial_register: userData.company_record_no || "",
+          record_no: userData.company_record_no || "",
           tax_no: userData.company_tax_no || "",
+          capital: Number(userData.company_capital || 0),
           currency: "ريال سعودي",
-          notes: `تأسيس حساب جديد | رأس المال: ${userData.company_capital || 0} ر.س`,
+          admin_code: normalizeDigits(userData.code).trim(),
+          admin_pass: normalizeDigits(userData.password).trim(),
+          status: "بانتظار موافقة السوبر أدمن",
+          notes: `طلب تأسيس ${entityType} | رأس المال: ${userData.company_capital || 0} ر.س`,
           created_at: new Date().toISOString(),
         };
 
         const { error: compErr } = await sb.from("companies").insert(newCompanyPayload);
         if (compErr) {
           console.error("Comp error:", compErr);
-          showToast("حدث خطأ أثناء تأسيس سجل الشركة!", "error");
+          showToast("حدث خطأ أثناء إرسال طلب تأسيس المنشأة!", "error");
           return { success: false, message: compErr.message };
         }
 
         setCompanies((prev) => [newCompanyPayload, ...prev]);
-        finalRole = "admin";
+      } else {
+        // Joining existing entity privately via slug/code (without leaking registered companies list)
+        const joinKey = (userData.join_company_slug || userData.company_id || "").trim().toLowerCase();
+        if (!joinKey) {
+          showToast("⚠️ يرجى إدخال كود أو رابط المنشأة للانضمام إليها.", "error");
+          return { success: false, message: "كود المنشأة مطلوب." };
+        }
+        const { data: dbCompanies } = await sb.from("companies").select("*");
+        const allKnownCompanies = dedupeById([...companies, ...((dbCompanies as Company[]) || [])]);
+        const matchedTarget = allKnownCompanies.find(
+          (c) =>
+            (c.slug || "").toLowerCase() === joinKey ||
+            (c.id || "").toLowerCase() === joinKey ||
+            (c.id || "").toLowerCase() === `company_${joinKey}`
+        );
+        if (!matchedTarget || !isCompanyApprovedStatus(matchedTarget.status)) {
+          showToast("⚠️ كود أو رابط المنشأة غير صحيح أو لم يتم اعتماده من السوبر أدمن بعد!", "error");
+          return { success: false, message: "منشأة غير موجودة أو غير معتمدة." };
+        }
+        finalCompId = matchedTarget.id;
+        // Prevent self-assigning admin when joining an existing company
+        if (finalRole === "admin") finalRole = "employee";
+        finalAccountType = "company_member";
       }
 
-      // 3. Define appropriate permissions based on role
+      // 3. Define appropriate permissions based on account type & role
       let userPerms: UserPerms;
-      if (finalRole === "admin") {
+      if (isIndividual) {
         userPerms = {
+          attendance: true,
+          dashboard: true,
+          pos: true,
+          pos_cashier: true,
+          pos_inventory: true,
+          pos_purchases: true,
+          pos_suppliers: true,
+          pos_categories: true,
+          pos_barcode: true,
+          pos_products_add: true,
+          pos_products_edit: true,
+          pos_products_delete: true,
+          pos_settings: true,
+          messages: true,
           installmentsView: true,
           installmentsAdd: true,
           installmentsEdit: true,
           installmentsDelete: true,
           quotes: true,
+          letters: true,
+          receipts: true,
+          payments: true,
+          expenses: true,
+          treasury: true,
+          financial_reports: true,
+          projects: true,
+          workers: false,
+          companies: false,
+          users: false,
+          sessions: false,
+          print: true,
+          dashTopCards: true,
+          dashCollection: true,
+          dashPulse: true,
+          dashLateClients: true,
+          dashLastReceipts: true,
+          dashUpcomingPaid: true,
+          region: "",
+          worker_id: null,
+        };
+      } else if (finalRole === "admin") {
+        userPerms = {
+          attendance: true,
+          dashboard: true,
+          pos: true,
+          pos_cashier: true,
+          pos_inventory: true,
+          pos_purchases: true,
+          pos_suppliers: true,
+          pos_categories: true,
+          pos_barcode: true,
+          pos_products_add: true,
+          pos_products_edit: true,
+          pos_products_delete: true,
+          pos_settings: true,
+          messages: true,
+          installmentsView: true,
+          installmentsAdd: true,
+          installmentsEdit: true,
+          installmentsDelete: true,
+          quotes: true,
+          letters: true,
           receipts: true,
           payments: true,
           expenses: true,
@@ -872,6 +1077,7 @@ export default function App() {
       } else if (finalRole === "cashier") {
         userPerms = {
           ...CASHIER_DEFAULT_PERMS,
+          messages: true,
           region: "",
           worker_id: null,
         };
@@ -879,6 +1085,7 @@ export default function App() {
         userPerms = {
           attendance: true,
           dashboard: true,
+          messages: true,
           installmentsView: true,
           installmentsAdd: true,
           installmentsEdit: true,
@@ -909,6 +1116,7 @@ export default function App() {
         userPerms = {
           attendance: true,
           dashboard: false,
+          messages: true,
           installmentsView: true,
           installmentsAdd: false,
           installmentsEdit: false,
@@ -937,17 +1145,20 @@ export default function App() {
       }
 
       // 4. Construct user payload
-      const newUserId = `usr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const newUserPayload: AuthUser = {
         id: newUserId,
         name: userData.name.trim(),
-        code: userData.code.trim(),
-        password: userData.password.trim(),
+        code: normalizeDigits(userData.code).trim(),
+        password: normalizeDigits(userData.password).trim(),
         phone: userData.phone?.trim() || "",
         email: userData.email?.trim() || "",
         role: finalRole,
-        company_id: finalCompId || (companies[0]?.id || "arab_world"),
-        status: "نشط",
+        account_type: finalAccountType,
+        entity_type: isCreatingPendingCompany ? entityType : undefined,
+        company_id: finalCompId,
+        status: isCreatingPendingCompany ? "بانتظار موافقة السوبر أدمن" : "نشط",
+        requested_company_name: isCreatingPendingCompany ? pendingCompanyName : undefined,
+        requested_company_slug: isCreatingPendingCompany ? pendingCompanySlug : undefined,
         perms: userPerms,
         company_perms: {},
         created_at: new Date().toISOString(),
@@ -961,22 +1172,42 @@ export default function App() {
 
       setUsers((prev) => [newUserPayload, ...prev]);
 
-      // 5. Auto-login the new user immediately
-      setCurrentUser(newUserPayload);
-      localStorage.setItem("aw_current_user", JSON.stringify(newUserPayload));
-
-      const matchedComp = companies.find(
-        (c) => c.id === newUserPayload.company_id || c.slug === newUserPayload.company_id
-      );
-      if (matchedComp) {
-        navigateToSlug(matchedComp.slug || matchedComp.id);
-      } else if (userData.create_company && userData.company_slug) {
-        navigateToSlug(userData.company_slug);
+      if (isCreatingPendingCompany) {
+        showToast(`👑 تم إرسال طلب تأسيس ${entityType} «${pendingCompanyName}» إلى خانة السوبر أدمن بانتظار الموافقة الرسمية!`, "success");
+        return {
+          success: true,
+          pendingApproval: true,
+          companyName: pendingCompanyName,
+          companySlug: pendingCompanySlug,
+        };
       }
 
-      showToast(`🎉 أهلاً بك يا ${newUserPayload.name}! تم إنشاء حسابك بنجاح وبدء الجلسة.`, "success");
-      await logSession(newUserPayload, "إنشاء حساب جديد وتسجيل دخول فوري");
-      await loadEverything();
+      // 5. Auto-login for active individual OR approved company join registration
+      setCurrentUser(newUserPayload);
+      localStorage.setItem("aw_current_user", JSON.stringify(newUserPayload));
+      if (newUserPayload.company_id) {
+        setSelectedCompanyId(newUserPayload.company_id);
+      }
+
+      if (!isIndividual) {
+        const matchedComp = companies.find(
+          (c) => c.id === newUserPayload.company_id || c.slug === newUserPayload.company_id
+        );
+        if (matchedComp) {
+          navigateToSlug(matchedComp.slug || matchedComp.id);
+        }
+      } else {
+        navigateToSlug(null);
+      }
+
+      showToast(
+        isIndividual
+          ? `🎉 أهلاً بك يا ${newUserPayload.name}! تم إنشاء حساب الأفراد المستقل بنجاح.`
+          : `🎉 أهلاً بك يا ${newUserPayload.name}! تم إنشاء حسابك بنجاح وبدء الجلسة.`,
+        "success"
+      );
+      await logSession(newUserPayload, isIndividual ? "إنشاء حساب أفراد مستقل وتسجيل دخول" : "إنشاء حساب جديد وتسجيل دخول فوري");
+      await loadEverything(newUserPayload);
       return { success: true };
     } catch (err: any) {
       console.error("Register user error:", err);
@@ -1019,7 +1250,10 @@ export default function App() {
   };
 
   // ERP Datatables State
-  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [users, _setUsers] = useState<AuthUser[]>([]);
+  const setUsers: React.Dispatch<React.SetStateAction<AuthUser[]>> = (updater) => {
+    _setUsers((prev) => dedupeById(typeof updater === "function" ? updater(prev) : updater));
+  };
   const [installments, setInstallments] = useState<Installment[]>([]);
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [letters, setLetters] = useState<OfficialLetter[]>([]);
@@ -1029,7 +1263,11 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [sessions, setSessions] = useState<DbSession[]>([]);
-  const [companies, setCompanies] = useState<Company[]>([]);
+  const [companies, _setCompanies] = useState<Company[]>([]);
+  const [companiesLoaded, setCompaniesLoaded] = useState<boolean>(false);
+  const setCompanies: React.Dispatch<React.SetStateAction<Company[]>> = (updater) => {
+    _setCompanies((prev) => dedupeById(typeof updater === "function" ? updater(prev) : updater));
+  };
   const [extracts, setExtracts] = useState<Extract[]>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>("all");
 
@@ -1255,6 +1493,7 @@ export default function App() {
 
   // 7. Companies Forms
   const [cName, setCName] = useState("");
+  const [cEntityType, setCEntityType] = useState<"شركة" | "مؤسسة">("شركة");
   const [cActivity, setCActivity] = useState("");
   const [cRegister, setCRegister] = useState("");
   const [cTaxNo, setCTaxNo] = useState("");
@@ -1366,6 +1605,8 @@ export default function App() {
     companies: false,
     users: false,
     sessions: false,
+    messages: true,
+    spreadsheets: true,
     print: false,
     hr_custody_view: false,
     hr_custody_add: false,
@@ -1380,6 +1621,7 @@ export default function App() {
     dashLastReceipts: false,
     dashUpcomingPaid: false,
   });
+  const [incomingExcelForSheet, setIncomingExcelForSheet] = useState<{ name: string; dataUrl: string } | null>(null);
 
   // Auth checker logic
   const handleLogin = async (e: React.FormEvent) => {
@@ -1388,33 +1630,93 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      const enteredCode = loginCode.trim();
-      const enteredPass = loginPass.trim();
+      const enteredCode = normalizeDigits(loginCode).trim();
+      const enteredPass = normalizeDigits(loginPass).trim();
+      const enteredLower = enteredCode.toLowerCase();
       const normCode = enteredCode.replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
       const normCodeNoZero = normCode.replace(/^0+/, "");
-      
-      const adminCodes = ["1007363904", "0564468888", "139213", "13921313", "الادمن", "admin", "المدير", "المدير العام", "سلطان", "سلطان العاصمي", "sultan"];
-      const adminPasses = ["1007363904", "0564468888", "139213", "13921313", "admin", "admin123"];
-      
-      const isGlobalAdmin = 
-        (adminCodes.includes(enteredCode) || adminCodes.includes(normCode) || adminCodes.includes(normCodeNoZero)) &&
-        (adminPasses.includes(enteredPass) || enteredPass === "139213" || enteredPass === "13921313");
+
+      // Ensure companies are loaded so routing & company status checks work reliably
+      let currentCompanies = dedupeById<Company>(companies);
+      if (currentCompanies.length === 0) {
+        try {
+          const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
+          currentCompanies = dedupeById<Company>(comp.data || []);
+          setCompanies(currentCompanies);
+        } catch (compErr) {
+          console.warn("Could not load companies during login:", compErr);
+        }
+      }
 
       const targetCompId = activeCompany?.id || null;
       let matchedComp: Company | undefined = undefined;
 
+      // Fetch all registered users first so tenant accounts (like company "admin") aren't shadowed by generic global aliases
+      const { data: allUsers } = await sb.from("users").select("*");
+      const usersList: AuthUser[] = (allUsers || []) as AuthUser[];
+
+      const explicitSuperAdminCodes = ["1007363904", "0564468888", "139213", "13921313", "سلطان", "سلطان العاصمي", "sultan"];
+      const genericAdminAliases = ["الادمن", "admin", "المدير", "المدير العام"];
+      const adminPasses = ["1007363904", "0564468888", "139213", "13921313", "admin", "admin123"];
+
+      const candidates = usersList.filter((u: any) => {
+        const rawCode = normalizeDigits(u.code || "").trim().toLowerCase();
+        const rawPhone = normalizeDigits(u.phone || "").trim().toLowerCase();
+        const rawEmail = (u.email || "").trim().toLowerCase();
+        const rawName = (u.name || "").trim().toLowerCase();
+        const uCode = rawCode.replace(/[^0-9a-zA-Z]/g, "");
+        const uPhone = rawPhone.replace(/[^0-9a-zA-Z]/g, "");
+        const uWorkId = normalizeDigits(u.worker_id || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
+        const uId = (u.id || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
+
+        return (
+          (rawCode && rawCode === enteredLower) ||
+          (rawPhone && rawPhone === enteredLower) ||
+          (rawEmail && rawEmail === enteredLower) ||
+          (uCode && (uCode === normCode || (normCodeNoZero && uCode.replace(/^0+/, "") === normCodeNoZero))) ||
+          (uPhone && (uPhone === normCode || (normCodeNoZero && uPhone.replace(/^0+/, "") === normCodeNoZero))) ||
+          (uWorkId && (uWorkId === normCode || (normCodeNoZero && uWorkId.replace(/^0+/, "") === normCodeNoZero))) ||
+          (uId && uId === normCode) ||
+          (rawName && rawName === enteredLower)
+        );
+      });
+
+      // Prefer candidate matching BOTH password and active company context (when multiple companies have same code like "admin" or "1001")
+      const passMatchingCandidates = candidates.filter((u: any) => {
+        const storedPass = normalizeDigits(String(u.password ?? "")).trim();
+        return !storedPass || storedPass === enteredPass;
+      });
+      const tenantSpecificMatch =
+        (targetCompId ? passMatchingCandidates.find((u: any) => u.company_id === targetCompId) : undefined) ||
+        passMatchingCandidates[0];
+
+      const isExplicitSuperAdmin =
+        (explicitSuperAdminCodes.includes(enteredCode) ||
+          explicitSuperAdminCodes.includes(enteredLower) ||
+          explicitSuperAdminCodes.includes(normCode) ||
+          explicitSuperAdminCodes.includes(normCodeNoZero)) &&
+        adminPasses.includes(enteredPass);
+
+      const isGenericSuperAdminAlias =
+        !tenantSpecificMatch &&
+        !targetCompId &&
+        (genericAdminAliases.includes(enteredCode) ||
+          genericAdminAliases.includes(enteredLower) ||
+          genericAdminAliases.includes(normCode)) &&
+        adminPasses.includes(enteredPass);
+
+      const isGlobalAdmin = isExplicitSuperAdmin || isGenericSuperAdminAlias;
+
       if (isGlobalAdmin) {
-        const isAdminSultan = enteredCode.includes("0564468888") || enteredCode.includes("سلطان") || enteredCode.includes("sultan");
-        const adminName = isAdminSultan ? "سلطان العاصمي (المدير العام)" : "المدير العام (الأدمن)";
-        const adminCode = isAdminSultan ? "0564468888" : "1007363904";
-        const adminId = `admin_${adminCode}`;
+        const adminName = "السوبر أدمن (مدير المنصة الوحيد)";
 
         const defaultAdmin: AuthUser = {
-          id: adminId,
+          id: SUPER_ADMIN_CANONICAL_ID,
           name: adminName,
-          code: adminCode,
+          code: SUPER_ADMIN_CANONICAL_CODE,
           password: enteredPass,
           role: "admin",
+          account_type: "super_admin",
           company_id: targetCompId,
           status: "نشط",
           perms: {
@@ -1432,6 +1734,7 @@ export default function App() {
             companies: true,
             users: true,
             sessions: true,
+            messages: true,
             print: true,
             dashTopCards: true,
             dashCollection: true,
@@ -1453,57 +1756,51 @@ export default function App() {
         }
 
         const matchedC = targetCompId
-          ? companies.find((c) => c.id === targetCompId || c.slug === targetCompId)
-          : (companies[0] || undefined);
+          ? currentCompanies.find((c) => c.id === targetCompId || c.slug === targetCompId)
+          : (currentCompanies.find((c) => isCompanyApprovedStatus(c.status)) || currentCompanies[0] || undefined);
         if (matchedC) {
           defaultAdmin.company_id = matchedC.id;
+          setSelectedCompanyId(matchedC.id);
           navigateToSlug(matchedC.slug || matchedC.id);
         }
 
         setCurrentUser(defaultAdmin);
         localStorage.setItem("aw_current_user", JSON.stringify(defaultAdmin));
         showToast(`مرحباً بك مجدداً ${defaultAdmin.name}`);
-        await logSession(defaultAdmin, "تسجيل دخول للنظام المالي");
-        await loadEverything();
+        await logSession(defaultAdmin, "تسجيل دخول للنظام المالي (السوبر أدمن الوحيد)");
+        await loadEverything(defaultAdmin);
         setIsLoading(false);
         return;
       }
 
-      // Query database for the user with matching code or worker record
-      let user: AuthUser | null = null;
-
-      // Fetch all registered users
-      const { data: allUsers } = await sb.from("users").select("*");
-
-      const matchedUser = (allUsers || []).find((u: any) => {
-        const uCode = (u.code || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
-        const uPhone = (u.phone || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
-        const uWorkId = (u.worker_id || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
-        const uId = (u.id || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
-        const uName = (u.name || "").trim().toLowerCase();
-
-        return (
-          (uCode && (uCode === normCode || (normCodeNoZero && uCode.replace(/^0+/, "") === normCodeNoZero))) ||
-          (uPhone && (uPhone === normCode || (normCodeNoZero && uPhone.replace(/^0+/, "") === normCodeNoZero))) ||
-          (uWorkId && (uWorkId === normCode || (normCodeNoZero && uWorkId.replace(/^0+/, "") === normCodeNoZero))) ||
-          (uId && uId === normCode) ||
-          (uName && uName === enteredCode.toLowerCase())
-        );
-      });
+      const matchedUser: AuthUser | undefined =
+        tenantSpecificMatch ||
+        (targetCompId ? candidates.find((u: any) => u.company_id === targetCompId) : undefined) ||
+        candidates[0];
 
       if (!matchedUser) {
         const cashierCodes = ["cashier", "كاشير", "صندوق", "امين_صندوق", "أمين_الصندوق", "cashier1", "كاشير1"];
-        const isCashierQuick = cashierCodes.includes(enteredCode.toLowerCase().trim()) || cashierCodes.includes(normCode);
+        const isCashierQuick = cashierCodes.includes(enteredLower) || cashierCodes.includes(normCode);
         const cashierPasses = ["cashier", "123456", "123", "cashier123", "139213", "13921313"];
 
         if (isCashierQuick && (cashierPasses.includes(enteredPass) || enteredPass.length >= 3)) {
+          const matchedCashierComp = targetCompId
+            ? currentCompanies.find((c) => c.id === targetCompId || c.slug === targetCompId)
+            : (currentCompanies.find((c) => isCompanyApprovedStatus(c.status)) || currentCompanies[0] || undefined);
+
+          if (matchedCashierComp && !isCompanyApprovedStatus(matchedCashierComp.status)) {
+            showToast("⏳ طلب تسجيل هذه المنشأة لا يزال بانتظار موافقة السوبر أدمن.", "info");
+            setIsLoading(false);
+            return;
+          }
+
           const defaultCashier: AuthUser = {
             id: "cashier_system",
             name: "كاشير النظام (أمين الصندوق والمحصل)",
             code: enteredCode,
             password: enteredPass,
             role: "cashier",
-            company_id: targetCompId,
+            company_id: matchedCashierComp?.id || targetCompId,
             status: "نشط",
             perms: {
               ...CASHIER_DEFAULT_PERMS,
@@ -1520,11 +1817,8 @@ export default function App() {
             console.warn("Background cashier DB sync skipped:", dbErr);
           }
 
-          const matchedCashierComp = targetCompId
-            ? companies.find((c) => c.id === targetCompId || c.slug === targetCompId)
-            : (companies[0] || undefined);
           if (matchedCashierComp) {
-            defaultCashier.company_id = matchedCashierComp.id;
+            setSelectedCompanyId(matchedCashierComp.id);
             navigateToSlug(matchedCashierComp.slug || matchedCashierComp.id);
           }
 
@@ -1532,7 +1826,7 @@ export default function App() {
           localStorage.setItem("aw_current_user", JSON.stringify(defaultCashier));
           showToast(`مرحباً بك مجدداً ${defaultCashier.name} - بصلاحيات الكاشير الكاملة 💰`);
           await logSession(defaultCashier, "تسجيل دخول كاشير مصرح");
-          await loadEverything();
+          await loadEverything(defaultCashier);
           setIsLoading(false);
           return;
         }
@@ -1542,20 +1836,28 @@ export default function App() {
         return;
       }
 
-      // Strictly check account status
-      if (matchedUser.status && matchedUser.status !== "نشط") {
-        if (matchedUser.status === "بانتظار موافقة السوبر أدمن" || matchedUser.status === "pending") {
-          showToast("⏳ طلب تسجيل هذه المنشأة لا يزال في خانة السوبر أدمن بانتظار المراجعة والاعتماد.", "info");
-        } else {
-          showToast("⚠️ عذراً، هذا الحساب ملغى أو معطل حالياً من قبل الإدارة!", "error");
-        }
+      // Strictly verify password
+      const storedPass = normalizeDigits(String(matchedUser.password ?? "")).trim();
+      if (storedPass && storedPass !== enteredPass) {
+        showToast("⚠️ كلمة المرور غير صحيحة!", "error");
         setIsLoading(false);
         return;
       }
 
-      // Strictly verify password
-      if (matchedUser.password && matchedUser.password !== enteredPass) {
-        showToast("⚠️ كلمة المرور غير صحيحة!", "error");
+      // Strictly check account status
+      if (matchedUser.status && matchedUser.status !== "نشط") {
+        if (
+          matchedUser.status === "بانتظار موافقة السوبر أدمن" ||
+          matchedUser.status === "بانتظار الاعتماد" ||
+          matchedUser.status === "pending" ||
+          matchedUser.status === "pending_approval"
+        ) {
+          showToast("⏳ طلب تسجيل هذه المنشأة أو الحساب لا يزال بانتظار موافقة الإدارة والسوبر أدمن.", "info");
+        } else if (matchedUser.status === "مرفوض") {
+          showToast("❌ عذراً، طلب التسجيل مرفوض من قبل الإدارة.", "error");
+        } else {
+          showToast("⚠️ عذراً، هذا الحساب ملغى أو معطل حالياً من قبل الإدارة!", "error");
+        }
         setIsLoading(false);
         return;
       }
@@ -1567,48 +1869,54 @@ export default function App() {
         };
       }
 
-      user = matchedUser as AuthUser;
+      const user: AuthUser = matchedUser as AuthUser;
 
-      if (!user) {
-        showToast("بيانات تصريح الدخول غير صحيحة!", "error");
-        setIsLoading(false);
-        return;
-      }
-
-
-
-      // Ensure we have loaded companies
-      let currentCompanies = companies;
-      if (currentCompanies.length === 0) {
-        try {
-          const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
-          currentCompanies = comp.data || [];
-          setCompanies(currentCompanies);
-        } catch (compErr) {
-          console.warn("Could not load companies during login:", compErr);
+      // Determine the company / personal workspace from the user's profile
+      const isIndivUser = user.account_type === "individual" || String(user.company_id || "").startsWith("indiv_");
+      if (isIndivUser) {
+        const indivWsId = user.company_id || `indiv_${user.id}`;
+        user.company_id = indivWsId;
+        setSelectedCompanyId(indivWsId);
+        navigateToSlug(null);
+      } else {
+        const compIdToUse = user.company_id || targetCompId;
+        if (compIdToUse && compIdToUse !== "all") {
+          matchedComp = currentCompanies.find(
+            (c) =>
+              c.id === compIdToUse ||
+              (c.slug || "") === compIdToUse
+          );
         }
-      }
 
-      // Automatically determine the company from the user's profile
-      const compIdToUse = user.company_id || targetCompId;
-      if (compIdToUse && compIdToUse !== "all") {
-        matchedComp = currentCompanies.find(
-          (c) =>
-            c.id === compIdToUse ||
-            (c.slug || "") === compIdToUse
-        );
-      }
+        // Enforce company approval status before allowing login
+        if (matchedComp && !isCompanyApprovedStatus(matchedComp.status)) {
+          if (matchedComp.status === "مرفوض") {
+            showToast("❌ عذراً، تم رفض طلب تسجيل هذه الشركة من قبل السوبر أدمن.", "error");
+          } else {
+            showToast("⏳ طلب تأسيس هذه الشركة لا يزال في خانة السوبر أدمن بانتظار الموافقة الرسمية.", "info");
+          }
+          setIsLoading(false);
+          return;
+        }
 
-      // Auto-detect and route to user's company context if available
-      if (matchedComp) {
-        navigateToSlug(matchedComp.slug || matchedComp.id);
+        // Auto-detect and route to user's company context if available
+        if (matchedComp) {
+          setSelectedCompanyId(matchedComp.id);
+          navigateToSlug(matchedComp.slug || matchedComp.id);
+        } else if (currentCompanies.length > 0 && !activeSlug && isGlobalSuperAdmin(user)) {
+          const fallbackComp = currentCompanies.find((c) => isCompanyApprovedStatus(c.status)) || currentCompanies[0];
+          if (fallbackComp) {
+            setSelectedCompanyId(fallbackComp.id);
+            navigateToSlug(fallbackComp.slug || fallbackComp.id);
+          }
+        }
       }
 
       setCurrentUser(user);
       localStorage.setItem("aw_current_user", JSON.stringify(user));
       showToast(`مرحباً بك مجدداً ${user.name}`);
       await logSession(user, "تسجيل دخول للنظام المالي");
-      await loadEverything();
+      await loadEverything(user);
     } catch (err: any) {
       console.error(err);
       showToast("حدث خطأ في الاتصال بالملقم المالي: " + (err?.message || err), "error");
@@ -1621,27 +1929,35 @@ export default function App() {
   const handleDirectLogin = async (inputCode?: string, enteredTotp?: string, companyOverrideId?: string | null) => {
     setIsLoading(true);
     try {
-      const codeCandidate = (inputCode || loginCode || "").trim();
-      const totpCandidate = (enteredTotp || "").trim();
+      const codeCandidate = normalizeDigits(inputCode || loginCode || "").trim();
+      const totpCandidate = normalizeDigits(enteredTotp || "").trim();
 
-      const adminCodes = ["1007363904", "0564468888", "139213", "13921313", "الادمن", "admin", "المدير", "المدير العام", "سلطان العاصمي"];
-      const isGlobalAdmin = 
-        adminCodes.includes(codeCandidate) || 
+      let currentCompanies = dedupeById<Company>(companies);
+      if (currentCompanies.length === 0) {
+        try {
+          const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
+          currentCompanies = dedupeById<Company>(comp.data || []);
+          setCompanies(currentCompanies);
+        } catch (compErr) {
+          console.warn("Could not load companies during 2FA login:", compErr);
+        }
+      }
+
+      const adminCodes = ["1007363904", "0564468888", "139213", "13921313", "سلطان العاصمي"];
+      const isGlobalAdmin =
+        adminCodes.includes(codeCandidate) ||
         adminCodes.includes(codeCandidate.replace(/[^0-9]/g, ""));
 
       const targetCompId = companyOverrideId || activeCompany?.id || null;
 
       if (isGlobalAdmin) {
-        const isAdminSultan = codeCandidate.includes("0564468888") || codeCandidate.includes("سلطان") || totpCandidate.includes("0564468888");
-        const adminName = isAdminSultan ? "سلطان العاصمي (المدير العام)" : "المدير العام (الأدمن)";
-        const adminCode = isAdminSultan ? "0564468888" : "1007363904";
-
         const defaultAdmin: AuthUser = {
-          id: `admin_${adminCode}`,
-          name: adminName,
-          code: adminCode,
+          id: SUPER_ADMIN_CANONICAL_ID,
+          name: "السوبر أدمن (مدير المنصة الوحيد)",
+          code: SUPER_ADMIN_CANONICAL_CODE,
           password: loginPass || "139213",
           role: "admin",
+          account_type: "super_admin",
           company_id: targetCompId,
           status: "نشط",
           perms: {
@@ -1659,6 +1975,7 @@ export default function App() {
             companies: true,
             users: true,
             sessions: true,
+            messages: true,
             print: true,
             dashTopCards: true,
             dashCollection: true,
@@ -1673,39 +1990,48 @@ export default function App() {
           created_at: new Date().toISOString()
         };
 
-        if (targetCompId) {
-          const matchedC = companies.find((c) => c.id === targetCompId || c.slug === targetCompId);
-          if (matchedC) navigateToSlug(matchedC.slug || matchedC.id);
+        const matchedC = targetCompId
+          ? currentCompanies.find((c) => c.id === targetCompId || c.slug === targetCompId)
+          : (currentCompanies.find((c) => isCompanyApprovedStatus(c.status)) || currentCompanies[0] || undefined);
+        if (matchedC) {
+          defaultAdmin.company_id = matchedC.id;
+          setSelectedCompanyId(matchedC.id);
+          navigateToSlug(matchedC.slug || matchedC.id);
         }
 
         setCurrentUser(defaultAdmin);
         localStorage.setItem("aw_current_user", JSON.stringify(defaultAdmin));
         showToast(`✅ أهلاً بك! تم الاعتماد والدخول المباشر المصدق بباركود Authenticator: ${defaultAdmin.name}`);
         await logSession(defaultAdmin, "تسجيل دخول مصدق - Authenticator 2FA");
-        await loadEverything();
+        await loadEverything(defaultAdmin);
         setIsLoading(false);
         return;
       }
 
       // Normal Employee / User direct login search
       const effectiveCode = codeCandidate || totpCandidate || "1001";
+      const effectiveLower = effectiveCode.toLowerCase();
       const normCode = effectiveCode.replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
       const normCodeNoZero = normCode.replace(/^0+/, "");
 
       const { data: allUsers } = await sb.from("users").select("*");
       const matchedUser = (allUsers || []).find((u: any) => {
-        const uCode = (u.code || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
-        const uPhone = (u.phone || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
-        const uWorkId = (u.worker_id || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
+        const rawCode = normalizeDigits(u.code || "").trim().toLowerCase();
+        const rawPhone = normalizeDigits(u.phone || "").trim().toLowerCase();
+        const uCode = rawCode.replace(/[^0-9a-zA-Z]/g, "");
+        const uPhone = rawPhone.replace(/[^0-9a-zA-Z]/g, "");
+        const uWorkId = normalizeDigits(u.worker_id || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
         const uId = (u.id || "").replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
         const uName = (u.name || "").trim().toLowerCase();
 
         return (
+          (rawCode && rawCode === effectiveLower) ||
+          (rawPhone && rawPhone === effectiveLower) ||
           (uCode && (uCode === normCode || (normCodeNoZero && uCode.replace(/^0+/, "") === normCodeNoZero))) ||
           (uPhone && (uPhone === normCode || (normCodeNoZero && uPhone.replace(/^0+/, "") === normCodeNoZero))) ||
           (uWorkId && (uWorkId === normCode || (normCodeNoZero && uWorkId.replace(/^0+/, "") === normCodeNoZero))) ||
           (uId && uId === normCode) ||
-          (uName && uName === effectiveCode.toLowerCase())
+          (uName && uName === effectiveLower)
         );
       });
 
@@ -1716,24 +2042,48 @@ export default function App() {
       }
 
       if (matchedUser.status && matchedUser.status !== "نشط") {
-        showToast("⚠️ عذراً، هذا الحساب ملغى أو معطل حالياً من قبل الإدارة!", "error");
+        if (
+          matchedUser.status === "بانتظار موافقة السوبر أدمن" ||
+          matchedUser.status === "بانتظار الاعتماد" ||
+          matchedUser.status === "pending"
+        ) {
+          showToast("⏳ حسابك لا يزال بانتظار موافقة الإدارة والسوبر أدمن.", "info");
+        } else {
+          showToast("⚠️ عذراً، هذا الحساب ملغى أو معطل حالياً من قبل الإدارة!", "error");
+        }
         setIsLoading(false);
         return;
       }
 
-      const targetC = targetCompId
-        ? companies.find((c) => c.id === targetCompId || c.slug === targetCompId)
-        : (companies.find((c) => c.id === matchedUser.company_id || c.slug === matchedUser.company_id) || companies[0] || undefined);
-      if (targetC) {
-        matchedUser.company_id = targetC.id;
-        navigateToSlug(targetC.slug || targetC.id);
+      const isIndivDirect = matchedUser.account_type === "individual" || String(matchedUser.company_id || "").startsWith("indiv_");
+      if (isIndivDirect) {
+        const indivWsId = matchedUser.company_id || `indiv_${matchedUser.id}`;
+        matchedUser.company_id = indivWsId;
+        setSelectedCompanyId(indivWsId);
+        navigateToSlug(null);
+      } else {
+        const targetC = targetCompId
+          ? currentCompanies.find((c) => c.id === targetCompId || c.slug === targetCompId)
+          : currentCompanies.find((c) => c.id === matchedUser.company_id || c.slug === matchedUser.company_id);
+
+        if (targetC && !isCompanyApprovedStatus(targetC.status)) {
+          showToast("⏳ طلب تأسيس هذه الشركة لا يزال بانتظار موافقة السوبر أدمن.", "info");
+          setIsLoading(false);
+          return;
+        }
+
+        if (targetC) {
+          matchedUser.company_id = targetC.id;
+          setSelectedCompanyId(targetC.id);
+          navigateToSlug(targetC.slug || targetC.id);
+        }
       }
 
       setCurrentUser(matchedUser as AuthUser);
       localStorage.setItem("aw_current_user", JSON.stringify(matchedUser));
       showToast(`✅ تم تسجيل الدخول المباشر المصدق: ${matchedUser.name}`);
       await logSession(matchedUser as AuthUser, "تسجيل دخول مصدق - Authenticator 2FA");
-      await loadEverything();
+      await loadEverything(matchedUser as AuthUser);
     } catch (err: any) {
       console.error("Direct 2FA login error:", err);
       showToast("حدث خطأ أثناء إجراء الدخول المباشر المصدق: " + (err?.message || err), "error");
@@ -1755,25 +2105,23 @@ export default function App() {
       }
 
       // Check if there is an existing user linked to this Google account (either by email or google_id)
-      let { data: existingUser } = await sb
-        .from("users")
-        .select("*")
-        .eq("email", gUser.email)
-        .maybeSingle();
-
-      if (!existingUser && gUser.uid) {
-        const { data: userByGoogleId } = await sb
-          .from("users")
-          .select("*")
-          .eq("google_id", gUser.uid)
-          .maybeSingle();
-        existingUser = userByGoogleId;
-      }
+      const { data: allUsers } = await sb.from("users").select("*");
+      const usersList: AuthUser[] = (allUsers || []) as AuthUser[];
+      const gEmailLower = gUser.email.trim().toLowerCase();
+      let existingUser =
+        usersList.find((u: any) => (u.email || "").trim().toLowerCase() === gEmailLower) ||
+        usersList.find((u: any) => u.google_id && u.google_id === gUser.uid) ||
+        null;
 
       if (existingUser) {
         const user: AuthUser = existingUser as AuthUser;
-        if (user.status === "بانتظار الاعتماد" || user.status === "pending") {
-          showToast("⚠️ حسابك وطلبك بانتظار موافقة الأدمن وتعيين الشركة والصلاحيات!", "info");
+        if (
+          user.status === "بانتظار موافقة السوبر أدمن" ||
+          user.status === "بانتظار الاعتماد" ||
+          user.status === "pending" ||
+          user.status === "pending_approval"
+        ) {
+          showToast("⏳ طلبك وطلب تأسيس المنشأة لا يزالان في خانة السوبر أدمن بانتظار الموافقة الرسمية!", "info");
           setIsLoading(false);
           return;
         }
@@ -1788,23 +2136,44 @@ export default function App() {
           return;
         }
 
-        // Ensure we have loaded companies
-        let currentCompanies = companies;
-        if (currentCompanies.length === 0) {
-          try {
-            const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
-            currentCompanies = comp.data || [];
-            setCompanies(currentCompanies);
-          } catch (compErr) {
-            console.warn("Could not load companies during Google login:", compErr);
+        const isIndivUser = user.account_type === "individual" || String(user.company_id || "").startsWith("indiv_");
+        if (isIndivUser) {
+          const indivWsId = user.company_id || `indiv_${user.id}`;
+          user.company_id = indivWsId;
+          setSelectedCompanyId(indivWsId);
+          navigateToSlug(null);
+        } else {
+          // Ensure we have loaded companies
+          let currentCompanies = dedupeById<Company>(companies);
+          if (currentCompanies.length === 0) {
+            try {
+              const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
+              currentCompanies = dedupeById<Company>(comp.data || []);
+              setCompanies(currentCompanies);
+            } catch (compErr) {
+              console.warn("Could not load companies during Google login:", compErr);
+            }
           }
-        }
 
-        const targetC = user.company_id && user.company_id !== "all"
-          ? (currentCompanies.find((c) => c.id === user.company_id || c.slug === user.company_id) || currentCompanies[0] || undefined)
-          : (currentCompanies[0] || undefined);
-        if (targetC) {
-          navigateToSlug(targetC.slug || targetC.id);
+          const targetC = user.company_id && user.company_id !== "all"
+            ? (currentCompanies.find((c) => c.id === user.company_id || c.slug === user.company_id) || undefined)
+            : (isGlobalSuperAdmin(user) ? (currentCompanies.find((c) => isCompanyApprovedStatus(c.status)) || currentCompanies[0] || undefined) : undefined);
+
+          if (targetC && !isCompanyApprovedStatus(targetC.status)) {
+            showToast(
+              targetC.status === "مرفوض"
+                ? "❌ تم رفض طلب تسجيل هذه الشركة من قبل السوبر أدمن."
+                : "⏳ طلب تأسيس الشركة المرتبط بحسابك لا يزال بانتظار موافقة السوبر أدمن.",
+              targetC.status === "مرفوض" ? "error" : "info"
+            );
+            setIsLoading(false);
+            return;
+          }
+
+          if (targetC) {
+            setSelectedCompanyId(targetC.id);
+            navigateToSlug(targetC.slug || targetC.id);
+          }
         }
 
         // Successfully logged in directly because they are active & linked!
@@ -1812,7 +2181,7 @@ export default function App() {
         localStorage.setItem("aw_current_user", JSON.stringify(user));
         showToast(`مرحباً بك مجدداً ${user.name} (تم الدخول عبر Google)`);
         await logSession(user, "تسجيل دخول بالنظام المالي (Google)");
-        await loadEverything();
+        await loadEverything(user);
       } else {
         // Not registered/linked yet!
         setGoogleUser({
@@ -1826,7 +2195,7 @@ export default function App() {
       console.error(err);
       if (err?.code !== "auth/popup-closed-by-user") {
         if (err?.code === "auth/unauthorized-domain") {
-          showToast("⚠️ الدومين (arab1000.online) غير مضاف في قائمة النطاقات المعتمدة (Authorized Domains) بـ Firebase Auth!", "error");
+          showToast("⚠️ الدومين غير مضاف في قائمة النطاقات المعتمدة (Authorized Domains) بـ Firebase Auth!", "error");
         } else {
           showToast("حدث خطأ أثناء الدخول عبر Google: " + (err?.message || err), "error");
         }
@@ -1846,13 +2215,14 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      const enteredCode = loginCode.trim();
-      const enteredPass = loginPass.trim();
-      
+      const enteredCode = normalizeDigits(loginCode).trim();
+      const enteredPass = normalizeDigits(loginPass).trim();
+      const enteredLower = enteredCode.toLowerCase();
+
       const adminCodes = ["1007363904", "0564468888", "139213", "13921313", "الادمن", "admin", "المدير", "المدير العام", "سلطان العاصمي"];
       const adminPasses = ["1007363904", "139213", "13921313"];
       const isGlobalAdmin = (adminCodes.includes(enteredCode) || adminCodes.includes(enteredCode.replace(/[^0-9]/g, ""))) && adminPasses.includes(enteredPass);
-      
+
       let matchedComp: Company | undefined = undefined;
 
       // Check if global admin and auto-update password in DB if it's correct but old
@@ -1867,15 +2237,15 @@ export default function App() {
         }
       }
 
-      // Query database for the user with matching code and password first
-      let { data, error } = await sb
-        .from("users")
-        .select("*")
-        .eq("code", enteredCode)
-        .eq("password", enteredPass)
-        .maybeSingle();
+      // Query all users and match reliably across Supabase & Firestore
+      const { data: allUsers } = await sb.from("users").select("*");
+      const data = (allUsers || []).find((u: any) => {
+        const uCode = normalizeDigits(u.code || "").trim().toLowerCase();
+        const uPass = normalizeDigits(String(u.password ?? "")).trim();
+        return uCode === enteredLower && uPass === enteredPass;
+      });
 
-      if (error || !data) {
+      if (!data) {
         showToast("⚠️ عذراً، بيانات تصريح الدخول غير صحيحة!", "error");
         setIsLoading(false);
         return;
@@ -1883,36 +2253,53 @@ export default function App() {
 
       const user: AuthUser = data as AuthUser;
       if (user.status && user.status !== "نشط") {
-        showToast("⚠️ عذراً، هذا الحساب موقوف أو معطل حالياً من قبل الإدارة!", "error");
+        if (user.status === "بانتظار موافقة السوبر أدمن" || user.status === "بانتظار الاعتماد" || user.status === "pending") {
+          showToast("⏳ هذا الحساب لا يزال بانتظار موافقة السوبر أدمن!", "info");
+        } else {
+          showToast("⚠️ عذراً، هذا الحساب موقوف أو معطل حالياً من قبل الإدارة!", "error");
+        }
         setIsLoading(false);
         return;
       }
 
       // Ensure we have loaded companies
-      let currentCompanies = companies;
+      let currentCompanies = dedupeById<Company>(companies);
       if (currentCompanies.length === 0) {
         try {
           const comp = await sb.from("companies").select("*").order("created_at", { ascending: false });
-          currentCompanies = comp.data || [];
+          currentCompanies = dedupeById<Company>(comp.data || []);
           setCompanies(currentCompanies);
         } catch (compErr) {
           console.warn("Could not load companies during Google linking:", compErr);
         }
       }
 
-      if (!isGlobalAdmin) {
-        if (user.company_id && user.company_id !== "all") {
-          matchedComp = currentCompanies.find(
-            (c) =>
-              c.id === user.company_id ||
-              (c.slug || "") === user.company_id
-          );
+      const isIndivLink = user.account_type === "individual" || String(user.company_id || "").startsWith("indiv_");
+      if (isIndivLink) {
+        const indivWsId = user.company_id || `indiv_${user.id}`;
+        setSelectedCompanyId(indivWsId);
+        navigateToSlug(null);
+      } else {
+        if (!isGlobalAdmin) {
+          if (user.company_id && user.company_id !== "all") {
+            matchedComp = currentCompanies.find(
+              (c) =>
+                c.id === user.company_id ||
+                (c.slug || "") === user.company_id
+            );
+            if (matchedComp && !isCompanyApprovedStatus(matchedComp.status)) {
+              showToast("⏳ طلب تسجيل هذه المنشأة لا يزال بانتظار موافقة السوبر أدمن.", "info");
+              setIsLoading(false);
+              return;
+            }
+          }
         }
-      }
 
-      // Auto-detect and route to user's company context
-      if (matchedComp) {
-        navigateToSlug(matchedComp.slug || matchedComp.id);
+        // Auto-detect and route to user's company context
+        if (matchedComp) {
+          setSelectedCompanyId(matchedComp.id);
+          navigateToSlug(matchedComp.slug || matchedComp.id);
+        }
       }
 
       // Safe update - ONLY updating the Google credentials on the user record, without touching any other user data!
@@ -1933,7 +2320,7 @@ export default function App() {
       showToast(`✓ تم ربط حساب Google بنجاح ومزامنة الدخول لـ ${user.name}`);
       await logSession(linkedUser, "ربط حساب Google وتسجيل دخول");
       setGoogleUser(null);
-      await loadEverything();
+      await loadEverything(linkedUser);
     } catch (err: any) {
       showToast("حدث خطأ أثناء ربط حساب Google: " + (err?.message || err), "error");
     } finally {
@@ -1947,7 +2334,10 @@ export default function App() {
     google_id?: string;
     phone: string;
     role?: "admin" | "cashier" | "employee" | "supervisor";
+    account_type?: "individual" | "company_member" | "company_manager";
+    entity_type?: "شركة" | "مؤسسة";
     company_id?: string;
+    join_company_slug?: string;
     requested_company_name?: string;
     requested_company_slug?: string;
     requested_company_manager?: string;
@@ -1959,34 +2349,121 @@ export default function App() {
   }) => {
     setIsLoading(true);
     try {
+      const isIndividual = data.account_type === "individual" && !data.requested_company_name;
+      const entityType: "شركة" | "مؤسسة" = data.entity_type === "مؤسسة" ? "مؤسسة" : "شركة";
       const generatedCode = Math.floor(100000 + Math.random() * 900000).toString();
       const generatedPass = Math.floor(100000 + Math.random() * 900000).toString();
       const newUserId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-      const assignedRole: "admin" | "cashier" | "employee" | "supervisor" =
-        data.role || (data.requested_company_name ? "admin" : "employee");
+      let pendingCompanyId: string | null = data.company_id || null;
+      let pendingSlug = "";
 
-      const assignedPerms = assignedRole === "cashier"
+      if (isIndividual) {
+        pendingCompanyId = `indiv_${newUserId}`;
+      } else if (data.requested_company_name) {
+        const rawSlug = data.requested_company_slug || "";
+        pendingSlug = rawSlug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+        if (!pendingSlug || pendingSlug.length < 2) {
+          showToast("يرجى إدخال رابط مخصص صالح للمنشأة!", "error");
+          return false;
+        }
+        const targetCompId = `company_${pendingSlug}`;
+        const { data: dbCompanies } = await sb.from("companies").select("id, slug");
+        const allKnownCompanies = dedupeById([...companies, ...((dbCompanies as Company[]) || [])]);
+        const exists = allKnownCompanies.some(
+          (c) =>
+            (c.slug || "").toLowerCase() === pendingSlug ||
+            (c.id || "").toLowerCase() === pendingSlug ||
+            (c.id || "").toLowerCase() === targetCompId.toLowerCase()
+        );
+        if (exists) {
+          showToast("⚠️ رابط المنشأة المختار مسجل مسبقاً! يرجى اختيار رابط آخر.", "error");
+          return false;
+        }
+
+        pendingCompanyId = targetCompId;
+        const pendingCompanyPayload: Company = {
+          id: targetCompId,
+          slug: pendingSlug,
+          name: data.requested_company_name.trim(),
+          entity_type: entityType,
+          manager: data.requested_company_manager || data.name,
+          phone: data.requested_company_phone || data.phone,
+          address: data.requested_company_address || "",
+          record_no: data.requested_company_record_no || "",
+          commercial_register: data.requested_company_record_no || "",
+          tax_no: data.requested_company_tax_no || "",
+          capital: Number(data.requested_company_capital || 0),
+          domain: pendingSlug,
+          domain_extension: ".com",
+          website: `https://${pendingSlug}.com`,
+          email: data.email || `info@${pendingSlug}.com`,
+          status: "بانتظار موافقة السوبر أدمن",
+          notes: `طلب تأسيس ${entityType} عبر Google | رأس المال: ${data.requested_company_capital || 0} ر.س`,
+          created_at: new Date().toISOString(),
+        };
+
+        const { error: compErr } = await sb.from("companies").insert(pendingCompanyPayload);
+        if (compErr) {
+          throw compErr;
+        }
+        setCompanies((prev) => [pendingCompanyPayload, ...prev]);
+      } else {
+        const joinKey = (data.join_company_slug || data.company_id || "").trim().toLowerCase();
+        if (!joinKey) {
+          showToast("⚠️ يرجى إدخال كود أو رابط المنشأة للانضمام إليها.", "error");
+          return false;
+        }
+        const { data: dbCompanies } = await sb.from("companies").select("*");
+        const allKnownCompanies = dedupeById([...companies, ...((dbCompanies as Company[]) || [])]);
+        const matchedTarget = allKnownCompanies.find(
+          (c) =>
+            (c.slug || "").toLowerCase() === joinKey ||
+            (c.id || "").toLowerCase() === joinKey ||
+            (c.id || "").toLowerCase() === `company_${joinKey}`
+        );
+        if (!matchedTarget || !isCompanyApprovedStatus(matchedTarget.status)) {
+          showToast("⚠️ كود أو رابط المنشأة غير صحيح أو لم يتم اعتماده بعد من السوبر أدمن.", "error");
+          return false;
+        }
+        pendingCompanyId = matchedTarget.id;
+      }
+
+      const assignedRole: "admin" | "cashier" | "employee" | "supervisor" = isIndividual
+        ? "admin"
+        : data.requested_company_name
+          ? "admin"
+          : (data.role && data.role !== "admin" ? data.role : "employee");
+
+      const assignedPerms: UserPerms = isIndividual
         ? {
-            ...CASHIER_DEFAULT_PERMS,
-            region: "",
-            worker_id: null
-          }
-        : {
             attendance: true,
             dashboard: true,
+            pos: true,
+            pos_cashier: true,
+            pos_inventory: true,
+            pos_purchases: true,
+            pos_suppliers: true,
+            pos_categories: true,
+            pos_barcode: true,
+            pos_products_add: true,
+            pos_products_edit: true,
+            pos_products_delete: true,
+            pos_settings: true,
+            messages: true,
             installmentsView: true,
             installmentsAdd: true,
-            installmentsEdit: false,
-            installmentsDelete: false,
+            installmentsEdit: true,
+            installmentsDelete: true,
             quotes: true,
+            letters: true,
             receipts: true,
             payments: true,
             expenses: true,
-            treasury: false,
+            treasury: true,
             financial_reports: true,
             projects: true,
-            workers: true,
+            workers: false,
             companies: false,
             users: false,
             sessions: false,
@@ -1998,8 +2475,44 @@ export default function App() {
             dashLastReceipts: true,
             dashUpcomingPaid: true,
             region: "",
-            worker_id: null
-          };
+            worker_id: null,
+          }
+        : assignedRole === "cashier"
+          ? {
+              ...CASHIER_DEFAULT_PERMS,
+              messages: true,
+              region: "",
+              worker_id: null,
+            }
+          : {
+              attendance: true,
+              dashboard: true,
+              messages: true,
+              installmentsView: true,
+              installmentsAdd: true,
+              installmentsEdit: assignedRole === "admin",
+              installmentsDelete: assignedRole === "admin",
+              quotes: true,
+              receipts: true,
+              payments: true,
+              expenses: true,
+              treasury: assignedRole === "admin",
+              financial_reports: assignedRole === "admin",
+              projects: true,
+              workers: true,
+              companies: assignedRole === "admin",
+              users: assignedRole === "admin",
+              sessions: false,
+              print: true,
+              dashTopCards: true,
+              dashCollection: true,
+              dashPulse: true,
+              dashLateClients: true,
+              dashLastReceipts: true,
+              dashUpcomingPaid: true,
+              region: "",
+              worker_id: null,
+            };
 
       const newUserPayload: AuthUser = {
         id: newUserId,
@@ -2010,10 +2523,12 @@ export default function App() {
         google_id: data.google_id || "",
         phone: data.phone,
         role: assignedRole,
-        status: "بانتظار الاعتماد",
-        company_id: data.company_id || null,
+        account_type: isIndividual ? "individual" : (data.requested_company_name ? "company_manager" : "company_member"),
+        entity_type: data.requested_company_name ? entityType : undefined,
+        status: isIndividual ? "نشط" : (data.requested_company_name ? "بانتظار موافقة السوبر أدمن" : "بانتظار الاعتماد"),
+        company_id: pendingCompanyId,
         requested_company_name: data.requested_company_name,
-        requested_company_slug: data.requested_company_slug,
+        requested_company_slug: pendingSlug || data.requested_company_slug,
         requested_company_manager: data.requested_company_manager,
         requested_company_phone: data.requested_company_phone,
         requested_company_capital: data.requested_company_capital,
@@ -2032,7 +2547,24 @@ export default function App() {
 
       setUsers((prev) => [newUserPayload, ...prev]);
       setGoogleUser(null);
-      showToast("✓ تم إرسال طلب تسجيل الحساب والشركة بنجاح للأدمن! سيتم تفعيل حسابك فور الموافقة.", "success");
+
+      if (isIndividual) {
+        setCurrentUser(newUserPayload);
+        localStorage.setItem("aw_current_user", JSON.stringify(newUserPayload));
+        setSelectedCompanyId(pendingCompanyId!);
+        navigateToSlug(null);
+        showToast(`🎉 أهلاً بك يا ${newUserPayload.name}! تم إنشاء حساب الأفراد المستقل بنجاح عبر Google.`, "success");
+        await logSession(newUserPayload, "إنشاء حساب أفراد مستقل (Google)");
+        await loadEverything(newUserPayload);
+        return true;
+      }
+
+      showToast(
+        data.requested_company_name
+          ? `👑 تم إرسال طلب تأسيس ${entityType} عبر Google إلى خانة السوبر أدمن! سيتم تفعيل حساب المدير العام فور الموافقة.`
+          : "✓ تم إرسال طلب تسجيل الحساب بنجاح لمدير المنشأة! سيتم تفعيل حسابك فور الموافقة.",
+        "success"
+      );
       return true;
     } catch (err: any) {
       console.error(err);
@@ -2065,24 +2597,60 @@ export default function App() {
 
       // 1. If chosenCompanyId is "CREATE_NEW" and the user requested a new company:
       if (chosenCompanyId === "CREATE_NEW" && targetUser.requested_company_name) {
-        const compSlug = targetUser.requested_company_slug || `comp-${Date.now()}`;
-        const newCompId = `company_${compSlug}`;
-        const companyPayload = {
-          id: newCompId,
-          slug: compSlug,
-          name: targetUser.requested_company_name,
-          manager: targetUser.requested_company_manager || targetUser.name,
-          phone: targetUser.requested_company_phone || targetUser.phone || "",
-          notes: `تم التأسيس والاعتماد من طلب التسجيل السحابي | رأس المال: ${targetUser.requested_company_capital || 0} ر.س`,
-          created_at: new Date().toISOString()
-        };
-
-        const { error: compErr } = await sb.from("companies").insert(companyPayload);
-        if (compErr) {
-          console.error("Comp creation error:", compErr);
+        if (!isGlobalSuperAdmin(currentUser)) {
+          showToast("⚠️ اعتماد وتأسيس الشركات الجديدة حصري لصلاحية السوبر أدمن فقط!", "error");
+          return;
         }
-        setCompanies(prev => [companyPayload, ...prev]);
-        finalCompId = newCompId;
+        const rawSlug = targetUser.requested_company_slug || `comp-${Date.now()}`;
+        const compSlug = rawSlug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "") || `comp-${Date.now()}`;
+        const newCompId = `company_${compSlug}`;
+        const existingComp = companies.find(
+          (c) => (c.id || "").toLowerCase() === newCompId.toLowerCase() || (c.slug || "").toLowerCase() === compSlug
+        );
+        if (!existingComp) {
+          const companyPayload: Company = {
+            id: newCompId,
+            slug: compSlug,
+            name: targetUser.requested_company_name,
+            manager: targetUser.requested_company_manager || targetUser.name,
+            phone: targetUser.requested_company_phone || targetUser.phone || "",
+            status: "نشط",
+            approval_date: new Date().toISOString(),
+            approved_by: currentUser?.name || "السوبر أدمن",
+            notes: `تم التأسيس والاعتماد من طلب التسجيل السحابي | رأس المال: ${targetUser.requested_company_capital || 0} ر.س`,
+            created_at: new Date().toISOString()
+          };
+
+          const { error: compErr } = await sb.from("companies").insert(companyPayload);
+          if (compErr) {
+            console.error("Comp creation error:", compErr);
+          }
+          setCompanies(prev => [companyPayload, ...prev]);
+        } else if (!isCompanyApprovedStatus(existingComp.status)) {
+          const approveData: Partial<Company> = {
+            status: "نشط",
+            approval_date: new Date().toISOString(),
+            approved_by: currentUser?.name || "السوبر أدمن",
+          };
+          await sb.from("companies").update(approveData).eq("id", existingComp.id);
+          setCompanies(prev => prev.map(c => c.id === existingComp.id ? { ...c, ...approveData } : c));
+        }
+        finalCompId = existingComp?.id || newCompId;
+      } else if (finalCompId) {
+        const chosenComp = companies.find(c => c.id === finalCompId);
+        if (chosenComp && !isCompanyApprovedStatus(chosenComp.status)) {
+          if (!isGlobalSuperAdmin(currentUser)) {
+            showToast("⚠️ هذه الشركة لا تزال بانتظار موافقة السوبر أدمن!", "error");
+            return;
+          }
+          const approveData: Partial<Company> = {
+            status: "نشط",
+            approval_date: new Date().toISOString(),
+            approved_by: currentUser?.name || "السوبر أدمن",
+          };
+          await sb.from("companies").update(approveData).eq("id", chosenComp.id);
+          setCompanies(prev => prev.map(c => c.id === chosenComp.id ? { ...c, ...approveData } : c));
+        }
       }
 
       // 2. Default permissions if not passed
@@ -2437,8 +3005,9 @@ export default function App() {
     return { updatedInstallments: newInstallments, updatedReceipts: newReceipts, updatedPayments: newPayments };
   };
 
-  const loadEverything = async () => {
-    if (!currentUser) return;
+  const loadEverything = async (overrideUser?: AuthUser | null) => {
+    const activeUser = overrideUser || currentUser;
+    if (!activeUser) return;
     try {
       const [u, inst, q, rec, pay, exp, pr, w, s, comp, ext] = await Promise.all([
         sb.from("users").select("*").order("created_at", { ascending: false }),
@@ -2572,16 +3141,17 @@ export default function App() {
         // User logged out mid-flight or session was cleared, do not restore state
         return;
       }
-      if (currentUser) {
-        const isGlobalAdminUser = 
-          currentUser.role === "admin" || 
-          currentUser.id.startsWith("admin_") || 
-          ["1007363904", "0564468888", "139213", "13921313", "admin"].includes(currentUser.code);
-        if (isGlobalAdminUser) {
+      if (activeUser) {
+        const isGlobalAdminUser = isGlobalSuperAdmin(activeUser);
+        if (isGlobalAdminUser || activeUser.id === "cashier_system") {
           return;
         }
 
-        const freshUser = uList.find((x) => x.id === currentUser.id);
+        if (uList.length === 0) {
+          return;
+        }
+
+        const freshUser = uList.find((x) => x.id === activeUser.id);
         if (freshUser) {
           if (freshUser.status && freshUser.status !== "نشط") {
             setCurrentUser(null);
@@ -2591,7 +3161,7 @@ export default function App() {
           }
 
           // Check if password explicitly changed by admin
-          if (freshUser.password && currentUser.password && freshUser.password !== currentUser.password) {
+          if (freshUser.password && activeUser.password && String(freshUser.password).trim() !== String(activeUser.password).trim()) {
             setCurrentUser(null);
             localStorage.removeItem("aw_current_user");
             showToast("🔒 تم تغيير كلمة المرور لحسابك من قبل الإدارة. يرجى إعادة تسجيل الدخول لمتابعة العمل.", "info");
@@ -2601,8 +3171,8 @@ export default function App() {
           // Dynamically synchronize permissions and user info in real-time without terminating active session
           setCurrentUser(freshUser);
           localStorage.setItem("aw_current_user", JSON.stringify(freshUser));
-        } else {
-          // The user was completely deleted from the database
+        } else if (!overrideUser) {
+          // Only sign out on background sync (not immediately during initial login before DB catches up)
           setCurrentUser(null);
           localStorage.removeItem("aw_current_user");
           showToast("⚠️ تم حذف حسابك من قبل الإدارة. تم تسجيل الخروج فوراً.", "error");
@@ -2801,11 +3371,28 @@ export default function App() {
   useEffect(() => {
     const verifySessionOnMount = async () => {
       if (currentUser) {
-        // If they are an admin, bypass database deletion check so they are never kicked out
-        const isImmortalAdmin = 
-          currentUser.role === "admin" || 
-          currentUser.id.startsWith("admin_") || 
-          ["1007363904", "0564468888", "139213", "13921313", "admin"].includes(currentUser.code);
+        // Normalize any legacy secondary owner session IDs into the single canonical Super Admin
+        const legacyOwnerIds = ["admin_0564468888", "admin_139213", "admin_13921313"];
+        if (legacyOwnerIds.includes(currentUser.id)) {
+          const normalizedSuperAdmin: AuthUser = {
+            ...currentUser,
+            id: SUPER_ADMIN_CANONICAL_ID,
+            code: SUPER_ADMIN_CANONICAL_CODE,
+            name: "السوبر أدمن (مدير المنصة الوحيد)",
+            account_type: "super_admin",
+          };
+          setCurrentUser(normalizedSuperAdmin);
+          localStorage.setItem("aw_current_user", JSON.stringify(normalizedSuperAdmin));
+          try {
+            await sb.from("users").upsert(normalizedSuperAdmin, { onConflict: "id" });
+          } catch (e) {
+            console.warn("Admin background sync skipped/failed:", e);
+          }
+          return;
+        }
+
+        // If they are the single global super admin or quick cashier, bypass database deletion check so they are never kicked out
+        const isImmortalAdmin = isGlobalSuperAdmin(currentUser);
 
         if (isImmortalAdmin) {
           // Sync with DB in the background without blocking or kicking the admin out
@@ -2814,6 +3401,10 @@ export default function App() {
           } catch (e) {
             console.warn("Admin background sync skipped/failed:", e);
           }
+          return;
+        }
+
+        if (currentUser.id === "cashier_system") {
           return;
         }
 
@@ -2835,10 +3426,15 @@ export default function App() {
             localStorage.removeItem("aw_current_user");
             showToast("⚠️ تم حذف هذا الحساب من النظام المالي. لا يمكن الدخول.", "error");
           } else if (data.status && data.status !== "نشط") {
-            // User is suspended
+            // User is suspended or pending approval
             setCurrentUser(null);
             localStorage.removeItem("aw_current_user");
-            showToast("⚠️ عذراً، هذا الحساب موقوف أو معطل حالياً من قبل الإدارة!", "error");
+            showToast(
+              data.status === "بانتظار موافقة السوبر أدمن"
+                ? "⏳ هذا الحساب لا يزال بانتظار موافقة السوبر أدمن."
+                : "⚠️ عذراً، هذا الحساب موقوف أو معطل حالياً من قبل الإدارة!",
+              data.status === "بانتظار موافقة السوبر أدمن" ? "info" : "error"
+            );
           }
         } catch (e) {
           console.error("Session verification failed:", e);
@@ -2884,6 +3480,8 @@ export default function App() {
         setCompanies(compList);
       } catch (err) {
         console.error("Failed to fetch initial companies for SaaS:", err);
+      } finally {
+        setCompaniesLoaded(true);
       }
     };
     loadInitialCompaniesForSaaS();
@@ -2901,9 +3499,24 @@ export default function App() {
     }
   }, [activeSlug, companies]);
 
-  const getAuthorizedCompanies = () => {
+  const getAuthorizedCompanies = (): Company[] => {
     if (!currentUser) return [];
-    if (currentUser.role === "admin") return companies;
+    const uniqueCompanies = dedupeById<Company>(companies);
+    // فقط السوبر أدمن الوحيد يرى جميع الشركات المسجلة والمعلقة في المنصة
+    if (isGlobalSuperAdmin(currentUser)) return uniqueCompanies;
+
+    // حسابات الأفراد معزولة تماماً ولا ترى أي شركات مسجلة
+    if (currentUser.account_type === "individual" || String(currentUser.company_id || "").startsWith("indiv_")) {
+      const indivId = currentUser.company_id || `indiv_${currentUser.id}`;
+      return [
+        {
+          id: indivId,
+          slug: "personal",
+          name: `حساب شخصي • ${currentUser.name}`,
+          status: "نشط",
+        },
+      ];
+    }
 
     const allowedSet = new Set<string>();
 
@@ -2913,22 +3526,22 @@ export default function App() {
 
     if (currentUser.company_perms && typeof currentUser.company_perms === "object") {
       Object.keys(currentUser.company_perms).forEach((cId) => {
-        if (cId && cId !== "global") {
+        if (cId && cId !== "global" && cId !== "all") {
           allowedSet.add(cId);
         }
       });
     }
 
     if (allowedSet.size === 0) {
-      allowedSet.add("arab_world");
+      return [];
     }
 
-    return companies.filter((c) => allowedSet.has(c.id));
+    return uniqueCompanies.filter((c) => allowedSet.has(c.id) && isCompanyApprovedStatus(c.status));
   };
 
   const isCompanyAuthorized = (compId: string | undefined | null) => {
     if (!currentUser) return false;
-    if (currentUser.role === "admin") return true;
+    if (isGlobalSuperAdmin(currentUser)) return true;
     const targetId = compId || "arab_world";
     const authComps = getAuthorizedCompanies();
     return authComps.some((c) => c.id === targetId);
@@ -2936,25 +3549,31 @@ export default function App() {
 
   const getAuthorizedUsers = () => {
     if (!currentUser) return [];
-    if (currentUser.role === "admin") return users;
+    if (isGlobalSuperAdmin(currentUser)) {
+      return users.filter((u) => !["admin_0564468888", "admin_139213", "admin_13921313"].includes(u.id));
+    }
+    if (currentUser.account_type === "individual" || String(currentUser.company_id || "").startsWith("indiv_")) {
+      return [currentUser];
+    }
     const authComps = getAuthorizedCompanies();
     const authCompIds = authComps.map((c) => c.id);
     return users.filter((u) => {
-      if (u.role === "admin") return false;
-      const uComp = u.company_id || "arab_world";
+      if (isGlobalSuperAdmin(u)) return false;
+      if (u.account_type === "individual" || String(u.company_id || "").startsWith("indiv_")) return false;
+      const uComp = u.company_id || "";
       return authCompIds.includes(uComp);
     });
   };
 
   const getTargetCompanyId = (formCompanyVal?: string) => {
-    if (currentUser?.role !== "admin") {
+    if (!isGlobalSuperAdmin(currentUser)) {
       if (formCompanyVal && isCompanyAuthorized(formCompanyVal)) {
         return formCompanyVal;
       }
       if (selectedCompanyId !== "all" && isCompanyAuthorized(selectedCompanyId)) {
         return selectedCompanyId;
       }
-      return currentUser?.company_id || "arab_world";
+      return currentUser?.company_id || "";
     }
     return formCompanyVal || (selectedCompanyId !== "all" ? selectedCompanyId : null) || null;
   };
@@ -3078,59 +3697,64 @@ export default function App() {
 
   useEffect(() => {
     if (currentUser) {
-      if (activeSection === "financial_reports" && selectedCompanyId === "all") {
-        const firstComp = currentUser.company_id || (companies[0]?.id || "arab_world");
-        setSelectedCompanyId(firstComp);
-      } else if (currentUser.role === "admin") {
-        if (selectedCompanyId !== "all" && !companies.some((c) => c.id === selectedCompanyId)) {
+      if (isGlobalSuperAdmin(currentUser)) {
+        if (activeSection === "financial_reports" && selectedCompanyId === "all") {
+          const firstComp = currentUser.company_id || (companies[0]?.id || "arab_world");
+          setSelectedCompanyId(firstComp);
+        } else if (selectedCompanyId !== "all" && !companies.some((c) => c.id === selectedCompanyId)) {
           setSelectedCompanyId("all");
         }
       } else {
-        const userCompId = currentUser.company_id || "arab_world";
-        if (selectedCompanyId !== userCompId) {
+        const userCompId = currentUser.company_id || (currentUser.account_type === "individual" ? `indiv_${currentUser.id}` : "");
+        if (userCompId && selectedCompanyId !== userCompId) {
           setSelectedCompanyId(userCompId);
         }
 
-        // Auto redirect active section if current section is unauthorized for non-admin
-        const hasAccess = (perm: string) => {
-          const activePerms = getActivePerms();
-          if (activePerms) {
-            if (activePerms[perm as keyof typeof activePerms] !== undefined) {
-              return !!activePerms[perm as keyof typeof activePerms];
+        if (currentUser.role !== "admin") {
+          // Auto redirect active section if current section is unauthorized for non-admin
+          const hasAccess = (perm: string) => {
+            const activePerms = getActivePerms();
+            if (activePerms) {
+              if (activePerms[perm as keyof typeof activePerms] !== undefined) {
+                return !!activePerms[perm as keyof typeof activePerms];
+              }
             }
-          }
-          if (perm === "attendance") return true;
-          if (perm === "dashboard") return true;
-          if (perm === "financial_reports") return false;
-          return false;
-        };
+            if (perm === "attendance") return true;
+            if (perm === "dashboard") return true;
+            if (perm === "financial_reports") return false;
+            return false;
+          };
 
-        let isAllowed = false;
-        if (activeSection === "my_profile") isAllowed = !isAttendanceOnly;
-        else if (activeSection === "dashboard") isAllowed = hasAccess("dashboard");
-        else if (activeSection === "pos") isAllowed = !isAttendanceOnly;
-        else if (activeSection === "attendance") isAllowed = hasAccess("attendance");
-        else if (activeSection === "installments") isAllowed = hasAccess("installmentsView");
-        else if (activeSection === "subcontracts") isAllowed = !isAttendanceOnly && hasAccess("installmentsView");
-        else if (activeSection === "quotes") isAllowed = hasAccess("quotes");
-        else if (activeSection === "letters") isAllowed = hasAccess("quotes") || hasAccess("letters");
-        else if (activeSection === "receipts") isAllowed = hasAccess("receipts");
-        else if (activeSection === "payments") isAllowed = hasAccess("payments");
-        else if (activeSection === "expenses") isAllowed = hasAccess("expenses");
-        else if (activeSection === "treasury") isAllowed = hasAccess("treasury");
-        else if (activeSection === "financial_reports") isAllowed = hasAccess("financial_reports");
-        else if (activeSection === "projects") isAllowed = hasAccess("projects");
-        else if (activeSection === "workers") isAllowed = hasAccess("workers");
-        else if (activeSection === "hr") isAllowed = hasAccess("workers");
-        else if (activeSection === "companies") isAllowed = hasAccess("companies") || currentUser?.role === "admin";
-        else if (activeSection === "company_assets") isAllowed = hasAccess("companies") || currentUser?.role === "admin";
-        else if (activeSection === "users") isAllowed = hasAccess("users");
-        else if (activeSection === "sessions") isAllowed = hasAccess("sessions");
+          let isAllowed = false;
+          if (activeSection === "my_profile") isAllowed = !isAttendanceOnly;
+          else if (activeSection === "dashboard") isAllowed = hasAccess("dashboard");
+          else if (activeSection === "pos") isAllowed = !isAttendanceOnly;
+          else if (activeSection === "messages") isAllowed = !isAttendanceOnly && (getActivePerms()?.messages === undefined ? true : hasAccess("messages"));
+          else if (activeSection === "spreadsheets") isAllowed = !isAttendanceOnly && (getActivePerms()?.spreadsheets === undefined ? true : hasAccess("spreadsheets"));
+          else if (activeSection === "attendance") isAllowed = hasAccess("attendance");
+          else if (activeSection === "installments") isAllowed = hasAccess("installmentsView");
+          else if (activeSection === "subcontracts") isAllowed = !isAttendanceOnly && hasAccess("installmentsView");
+          else if (activeSection === "quotes") isAllowed = hasAccess("quotes");
+          else if (activeSection === "letters") isAllowed = hasAccess("quotes") || hasAccess("letters");
+          else if (activeSection === "receipts") isAllowed = hasAccess("receipts");
+          else if (activeSection === "payments") isAllowed = hasAccess("payments");
+          else if (activeSection === "expenses") isAllowed = hasAccess("expenses");
+          else if (activeSection === "treasury") isAllowed = hasAccess("treasury");
+          else if (activeSection === "financial_reports") isAllowed = hasAccess("financial_reports");
+          else if (activeSection === "projects") isAllowed = hasAccess("projects");
+          else if (activeSection === "workers") isAllowed = hasAccess("workers");
+          else if (activeSection === "hr") isAllowed = hasAccess("workers");
+          else if (activeSection === "companies") isAllowed = currentUser?.account_type !== "individual" && (hasAccess("companies") || currentUser?.role === "admin");
+          else if (activeSection === "company_assets") isAllowed = hasAccess("companies") || currentUser?.role === "admin";
+          else if (activeSection === "users") isAllowed = hasAccess("users");
+          else if (activeSection === "sessions") isAllowed = hasAccess("sessions");
 
-        if (!isAllowed) {
+          if (!isAllowed) {
           const sectionsOrdered = [
             "dashboard",
             "pos",
+            "messages",
+            "spreadsheets",
             "my_profile",
             "attendance",
             "installments",
@@ -3152,6 +3776,9 @@ export default function App() {
           const allowedSection = sectionsOrdered.find(sec => {
             if (sec === "my_profile") return !isAttendanceOnly;
             if (sec === "dashboard") return hasAccess("dashboard");
+            if (sec === "pos") return !isAttendanceOnly;
+            if (sec === "messages") return !isAttendanceOnly && (getActivePerms()?.messages === undefined ? true : hasAccess("messages"));
+            if (sec === "spreadsheets") return !isAttendanceOnly && (getActivePerms()?.spreadsheets === undefined ? true : hasAccess("spreadsheets"));
             if (sec === "attendance") return hasAccess("attendance");
             if (sec === "installments") return hasAccess("installmentsView");
             if (sec === "subcontracts") return !isAttendanceOnly && hasAccess("installmentsView");
@@ -3172,6 +3799,7 @@ export default function App() {
           if (allowedSection && allowedSection !== activeSection) {
             setActiveSection(allowedSection);
           }
+        }
         }
       }
     }
@@ -3282,13 +3910,13 @@ export default function App() {
   };
 
   const getWorkersForPaymentCompany = () => {
-    const activeCompanyId = paymentCompanyId || (currentUser?.company_id || "");
-    return workers.filter((w) => {
-      const wComp = w.company_id || "";
+    const activeCompanyId =
+      paymentCompanyId ||
+      (!isGlobalSuperAdmin(currentUser) ? currentUser?.company_id : (selectedCompanyId !== "all" ? selectedCompanyId : ""));
+    return getVisibleWorkers().filter((w) => {
+      const wComp = w.company_id || "arab_world";
       if (!activeCompanyId) return true;
-      const comp1 = activeCompanyId === "arab_world" ? "" : activeCompanyId;
-      const comp2 = wComp === "arab_world" ? "" : wComp;
-      return comp1 === comp2;
+      return wComp === activeCompanyId;
     });
   };
 
@@ -3333,6 +3961,27 @@ export default function App() {
       if (!isCompanyAuthorized(item.company_id)) return false;
       const itemComp = item.company_id || "arab_world";
       return selectedCompanyId === "all" || itemComp === selectedCompanyId;
+    });
+  };
+
+  const getVisibleLetters = () => {
+    return letters.filter((item) => {
+      if (!isCompanyAuthorized(item.company_id)) return false;
+      const itemComp = item.company_id || "arab_world";
+      return selectedCompanyId === "all" || itemComp === selectedCompanyId;
+    });
+  };
+
+  const getVisibleSessions = () => {
+    if (isGlobalSuperAdmin(currentUser)) return sessions;
+    const authUserCodes = new Set(getAuthorizedUsers().map((u) => u.code));
+    return sessions.filter((s: any) => {
+      if (s.code === "1007363904") return false;
+      if (s.company_id) {
+        if (!isCompanyAuthorized(s.company_id)) return false;
+        return selectedCompanyId === "all" || s.company_id === selectedCompanyId;
+      }
+      return authUserCodes.has(s.code);
     });
   };
 
@@ -5252,7 +5901,7 @@ ${attachment ? `
     let linked = rSelectedInstallment;
     if (!linked && rContractQuery) {
       const cleanQ = rContractQuery.trim();
-      linked = installments.find(
+      linked = getInstallmentsForReceipt().find(
         (x) =>
           (x.no && x.no.trim().toUpperCase() === cleanQ.toUpperCase()) ||
           (x.client && x.client.trim() === cleanQ) ||
@@ -5435,11 +6084,11 @@ ${attachment ? `
     }
     if (!targetInst && payTo) {
       const cleanTo = payTo.trim().toLowerCase();
-      const targetCompany = getTargetCompanyId(paymentCompanyId);
-      targetInst = installments.find(x =>
+      const targetCompany = getTargetCompanyId(paymentCompanyId) || "arab_world";
+      targetInst = getInstallmentsForReceipt().find(x =>
         x.client &&
         x.client.trim().toLowerCase() === cleanTo &&
-        (!targetCompany || !x.company_id || x.company_id === targetCompany)
+        (x.company_id || "arab_world") === targetCompany
       ) || null;
     }
 
@@ -5604,7 +6253,7 @@ ${attachment ? `
     }
     const p = payments.find((x) => x.id === paymentId);
     if (!p) return;
-    const instId = p.installment_id || (p.to_name ? installments.find(i => i.client && i.client.trim().toLowerCase() === p.to_name.trim().toLowerCase())?.id : undefined);
+    const instId = p.installment_id || (p.to_name ? installments.find(i => (i.company_id || "arab_world") === (p.company_id || "arab_world") && i.client && i.client.trim().toLowerCase() === p.to_name.trim().toLowerCase())?.id : undefined);
 
     setIsLoading(true);
     try {
@@ -5942,6 +6591,10 @@ ${attachment ? `
       showToast("⚠️ عذراً، لا تملك صلاحية إضافة أو تعديل الشركات!", "error");
       return;
     }
+    if (!editCompanyId && !isGlobalSuperAdmin(currentUser)) {
+      showToast("⚠️ إضافة وتسجيل الشركات الجديدة مقتصر على السوبر أدمن فقط!", "error");
+      return;
+    }
     if (!cName) return;
 
     const targetCompanyId = editCompanyId || "comp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
@@ -5957,6 +6610,7 @@ ${attachment ? `
 
     const row: any = {
       name: cName.trim(),
+      entity_type: cEntityType,
       activity: cActivity.trim(),
       commercial_register: cRegister.trim(),
       tax_no: cTaxNo.trim(),
@@ -5982,6 +6636,8 @@ ${attachment ? `
 
     if (!editCompanyId) {
       row.id = targetCompanyId;
+      row.status = isGlobalSuperAdmin(currentUser) ? "نشط" : "بانتظار موافقة السوبر أدمن";
+      row.created_at = new Date().toISOString();
     }
 
     setIsLoading(true);
@@ -6045,7 +6701,11 @@ ${attachment ? `
       setCLetterheadPrimaryColor(DEFAULT_PRIMARY_COLOR);
       setCLetterheadAccentColor(DEFAULT_ACCENT_COLOR);
       await loadEverything();
-      showToast("تم حفظ بطاقة الشركة وهوية الكليشة وعروض الأسعار بنجاح!");
+      showToast(
+        !editCompanyId && !isGlobalSuperAdmin(currentUser)
+          ? "⏳ تم إرسال طلب إنشاء الشركة الجديدة إلى خانة السوبر أدمن بانتظار الموافقة!"
+          : "تم حفظ بطاقة الشركة وهوية الكليشة وعروض الأسعار بنجاح!"
+      );
     } catch {
       showToast("حدث خطأ أثناء الاتصال بالخادم لحفظ الشركة", "error");
     } finally {
@@ -6718,36 +7378,47 @@ ${attachment ? `
     }
     if (!uName || !uCode || !uPass) return;
 
+    const cleanCodeCheck = normalizeDigits(uCode).trim();
+    if (editUserId !== SUPER_ADMIN_CANONICAL_ID && RESERVED_SUPER_ADMIN_CODES.includes(cleanCodeCheck)) {
+      showToast("⚠️ لا يمكن إنشاء سوبر أدمن إضافي — يوجد سوبر أدمن واحد فقط على المنصة!", "error");
+      return;
+    }
+
     let finalRole = uRole;
     let finalCompanyId = uCompanyId;
 
-    if (currentUser?.role !== "admin") {
-      // Prevent privilege escalation
-      if (uRole === "admin") {
+    if (!finalCompanyId || finalCompanyId === "all") {
+      if (editUserId === SUPER_ADMIN_CANONICAL_ID) {
+        finalCompanyId = "";
+      } else {
+        showToast("⚠️ السوبر أدمن واحد فقط — يرجى تحديد الشركة أو المؤسسة التابع لها هذا الحساب!", "error");
+        return;
+      }
+    }
+
+    if (!isGlobalSuperAdmin(currentUser)) {
+      // Prevent privilege escalation to global super admin
+      if (uRole === "admin" && !finalCompanyId) {
         finalRole = "employee";
       }
 
       // Prevent unauthorized company assignment
       const authComps = getAuthorizedCompanies();
       const authCompIds = authComps.map((c) => c.id);
-      if (!authCompIds.includes(uCompanyId)) {
-        showToast("⚠️ غير مصرح لك بتعيين موظف لهذه الشركة!", "error");
+      if (!authCompIds.includes(finalCompanyId)) {
+        showToast("⚠️ غير مصرح لك بتعيين موظف لهذه المنشأة!", "error");
         return;
       }
     }
 
-    if (finalRole !== "admin" && !finalCompanyId) {
-      showToast("⚠️ يرجى اختيار الشركة التابع لها الموظف!", "error");
-      return;
-    }
-
-    const row = {
+    const row: any = {
       id: editUserId || undefined,
       name: uName.trim(),
       code: uCode.trim(),
       password: uPass.trim(),
       role: finalRole,
-      company_id: finalRole === "admin" ? null : finalCompanyId,
+      account_type: editUserId === SUPER_ADMIN_CANONICAL_ID ? "super_admin" : (finalRole === "admin" ? "company_manager" : "company_member"),
+      company_id: editUserId === SUPER_ADMIN_CANONICAL_ID ? (finalCompanyId || null) : finalCompanyId,
       status: uStatus,
       updated_at: new Date().toISOString(),
       perms: {
@@ -6800,6 +7471,7 @@ ${attachment ? `
         companies: false,
         users: false,
         sessions: false,
+        messages: true,
         print: false,
         dashTopCards: false,
         dashCollection: false,
@@ -6947,13 +7619,6 @@ ${attachment ? `
         `${x.no} | ${x.client} | ${x.identity}` === cleanVal ||
         (x.no && cleanVal.toUpperCase().includes(x.no.trim().toUpperCase())) ||
         (x.client && cleanVal.includes(x.client.trim()))
-    ) || installments.find(
-      (x) =>
-        (x.no && x.no.trim().toUpperCase() === cleanVal.toUpperCase()) ||
-        (x.client && x.client.trim() === cleanVal) ||
-        (x.identity && x.identity.trim() === cleanVal) ||
-        `${x.no} | ${x.client} | ${x.identity}` === cleanVal ||
-        (x.no && cleanVal.toUpperCase().includes(x.no.trim().toUpperCase()))
     );
 
     if (linked) {
@@ -6991,13 +7656,6 @@ ${attachment ? `
         `${x.no} | ${x.client} | ${x.identity}` === cleanVal ||
         (x.no && cleanVal.toUpperCase().includes(x.no.trim().toUpperCase())) ||
         (x.client && cleanVal.includes(x.client.trim()))
-    ) || installments.find(
-      (x) =>
-        (x.no && x.no.trim().toUpperCase() === cleanVal.toUpperCase()) ||
-        (x.client && x.client.trim() === cleanVal) ||
-        (x.identity && x.identity.trim() === cleanVal) ||
-        `${x.no} | ${x.client} | ${x.identity}` === cleanVal ||
-        (x.no && cleanVal.toUpperCase().includes(x.no.trim().toUpperCase()))
     );
 
     if (linked) {
@@ -7016,13 +7674,16 @@ ${attachment ? `
   };
 
   // Nav categories helpers
+  const isIndividualAccount = currentUser?.account_type === "individual" || String(currentUser?.company_id || "").startsWith("indiv_");
   const navigationItems = [
     { key: "dashboard", label: "الرئيسية", icon: Home, visible: !isAttendanceOnly && can("dashboard") },
     { key: "pos", label: "الكاشير ونقاط البيع (POS)", icon: ShoppingCart, visible: !isAttendanceOnly },
-    { key: "my_profile", label: "ملفي الوظيفي والخدمات الذاتية", icon: User, visible: !isAttendanceOnly },
-    { key: "attendance", label: "بصمة الحضور والانصراف (GPS)", icon: MapPin, visible: can("attendance") },
+    { key: "messages", label: isIndividualAccount ? "محادثاتي والملفات الخاصة" : "المراسلات الداخلية (واتساب الشركة)", icon: MessageSquare, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("messages") || currentUser?.perms?.messages === undefined) },
+    { key: "spreadsheets", label: "جداول الإكسل والمشاركة", icon: FileSpreadsheet, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("spreadsheets") || currentUser?.perms?.spreadsheets === undefined) },
+    { key: "my_profile", label: "ملفي الوظيفي والخدمات الذاتية", icon: User, visible: !isAttendanceOnly && !isIndividualAccount },
+    { key: "attendance", label: "بصمة الحضور والانصراف (GPS)", icon: MapPin, visible: can("attendance") && !isIndividualAccount },
     { key: "installments", label: "التقسيط والعقود", icon: ClipboardList, visible: !isAttendanceOnly && can("installmentsView") },
-    { key: "subcontracts", label: "عقود مقاولات الباطن (عرب وورلد)", icon: FileSignature, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("installmentsView")) },
+    { key: "subcontracts", label: "عقود مقاولات الباطن", icon: FileSignature, visible: !isAttendanceOnly && !isIndividualAccount && (currentUser?.role === "admin" || can("installmentsView")) },
     { key: "quotes", label: "عروض الأسعار", icon: FileText, visible: !isAttendanceOnly && can("quotes") },
     { key: "letters", label: "الخطابات الرسمية", icon: Mail, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("quotes")) },
     { key: "receipts", label: "سند قبض", icon: Landmark, visible: !isAttendanceOnly && can("receipts") },
@@ -7031,12 +7692,12 @@ ${attachment ? `
     { key: "treasury", label: "الخزنة الفرعية", icon: Shield, visible: !isAttendanceOnly && can("treasury") },
     { key: "financial_reports", label: "التقارير والقوائم المالية", icon: PieChart, visible: !isAttendanceOnly && can("financial_reports") },
     { key: "projects", label: "المشاريع الجارية", icon: Briefcase, visible: !isAttendanceOnly && can("projects") },
-    { key: "workers", label: "العمال والسلفيات", icon: Users, visible: !isAttendanceOnly && can("workers") },
-    { key: "hr", label: "شؤون الموظفين", icon: Users, visible: !isAttendanceOnly && can("workers") },
-    { key: "company_assets", label: "أصول وممتلكات الشركات", icon: Building, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("companies")) },
-    { key: "companies", label: "دليل الشركات والمستخلصات", icon: Building, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("companies")) },
-    { key: "users", label: "الموظفين والصلاحية", icon: Settings, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("users")) },
-    { key: "sessions", label: "سجل حركات النظام", icon: Clock, visible: !isAttendanceOnly && (currentUser?.role === "admin" || can("sessions")) },
+    { key: "workers", label: "العمال والسلفيات", icon: Users, visible: !isAttendanceOnly && !isIndividualAccount && can("workers") },
+    { key: "hr", label: "شؤون الموظفين", icon: Users, visible: !isAttendanceOnly && !isIndividualAccount && can("workers") },
+    { key: "company_assets", label: "أصول وممتلكات المنشأة", icon: Building, visible: !isAttendanceOnly && !isIndividualAccount && (currentUser?.role === "admin" || can("companies")) },
+    { key: "companies", label: isGlobalSuperAdmin(currentUser) ? "دليل الشركات والمستخلصات (السوبر أدمن)" : "ملف المنشأة والمستخلصات", icon: Building, visible: !isAttendanceOnly && !isIndividualAccount && (currentUser?.role === "admin" || can("companies")) },
+    { key: "users", label: "الموظفين والصلاحية", icon: Settings, visible: !isAttendanceOnly && !isIndividualAccount && (currentUser?.role === "admin" || can("users")) },
+    { key: "sessions", label: "سجل حركات النظام", icon: Clock, visible: !isAttendanceOnly && !isIndividualAccount && (currentUser?.role === "admin" || can("sessions")) },
   ];
 
   // SaaS Multi-tenant URL Path Routing and isolation
@@ -7044,11 +7705,12 @@ ${attachment ? `
     (c) => (c.slug || "").toLowerCase() === (activeSlug || "").toLowerCase() || c.id.toLowerCase() === (activeSlug || "").toLowerCase()
   );
 
-  // 1. If on the main domain/portal (no active slug):
-  if (!activeSlug) {
+  // 1. If on the main domain/portal (no active slug) and not logged in:
+  // الشركات المسجلة لا يراها إلا السوبر أدمن — لا يتم تمرير قائمة الشركات للبوابة العامة
+  if (!activeSlug && !currentUser) {
     return (
       <SaasLandingPortal
-        companies={companies}
+        companies={[]}
         onRegisterCompany={handleRegisterCompany}
         onRegisterUser={handleRegisterUser}
         onRegisterPendingUser={handleRegisterPendingUser}
@@ -7071,8 +7733,18 @@ ${attachment ? `
     );
   }
 
-  // 2. Fallback Route: If there is a slug or unknown URL path but no matching company in DB:
-  if (!activeCompany) {
+  // 2. Fallback Route: If there is a slug or unknown URL path
+  if (activeSlug && (!activeCompany || (!currentUser && !isCompanyApprovedStatus(activeCompany.status)))) {
+    if (!companiesLoaded) {
+      return (
+        <div className="min-h-screen mesh-gradient flex items-center justify-center p-6 text-slate-200 font-sans" dir="rtl">
+          <div className="bg-slate-900/90 border border-amber-500/30 rounded-3xl px-8 py-6 text-center space-y-3 shadow-2xl">
+            <div className="w-8 h-8 rounded-full border-2 border-amber-400 border-t-transparent animate-spin mx-auto" />
+            <p className="text-xs font-black text-amber-300">جاري تحميل بيانات المنشأة...</p>
+          </div>
+        </div>
+      );
+    }
     return <NotFound404 onGoHome={() => navigateToSlug(null)} />;
   }
 
@@ -7242,7 +7914,7 @@ ${attachment ? `
               <span>مراجعة الآليات التشغيلية نشطة</span>
             </div>
             <p className="text-[9px] font-medium text-slate-600 leading-relaxed max-w-xs mx-auto">
-              بموجب أنظمة هيئة المقاولات واللوائح والائتمان الموحدة لشركة {activeCompany.name}.
+              بموجب أنظمة هيئة المقاولات واللوائح والائتمان الموحدة لشركة {activeCompany?.name || "عرب وورلد"}.
             </p>
           </div>
         </div>
@@ -7273,16 +7945,35 @@ ${attachment ? `
       <div className="w-full md:w-64 glass border-l border-white/5 flex flex-col justify-between shrink-0 p-5 z-20">
         <div className="space-y-6">
           
-          {/* Main Logo visual */}
-          <div className="flex items-center gap-3 border-b border-white/5 pb-5">
-            <div className="w-9 h-10 bg-amber-500 rounded-xl flex items-center justify-center shadow-lg relative shrink-0">
-              <span className="text-slate-950 font-black text-sm">AW</span>
-            </div>
-            <div>
-              <h2 className="text-sm font-black text-white">عرب وورلد آدز</h2>
-              <p className="text-[10px] font-bold text-amber-400 leading-normal">الحسابات والتقسيط الذكي</p>
-            </div>
-          </div>
+          {/* Main Logo visual - dynamically reflects active company */}
+          {(() => {
+            const authComps = getAuthorizedCompanies();
+            const brandComp = selectedCompanyId !== "all"
+              ? authComps.find((c) => c.id === selectedCompanyId)
+              : authComps[0];
+            const brandName = isIndividualAccount
+              ? currentUser.name
+              : (brandComp?.name || "عرب وورلد آدز");
+            const brandSub = isIndividualAccount
+              ? "حساب أفراد مستقل"
+              : (brandComp?.activity || "الحسابات والتقسيط الذكي");
+            const monogram = isIndividualAccount
+              ? "ID"
+              : brandComp?.id === "arab_world" || !brandComp
+                ? "AW"
+                : brandName.trim().slice(0, 2).toUpperCase();
+            return (
+              <div className="flex items-center gap-3 border-b border-white/5 pb-5">
+                <div className="w-9 h-10 bg-amber-500 rounded-xl flex items-center justify-center shadow-lg relative shrink-0">
+                  <span className="text-slate-950 font-black text-sm">{monogram}</span>
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-sm font-black text-white truncate">{brandName}</h2>
+                  <p className="text-[10px] font-bold text-amber-400 leading-normal truncate">{brandSub}</p>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Navigation Links with custom triggers */}
           <nav className="space-y-1.5 overflow-y-auto max-h-[60vh] pr-1">
@@ -7320,10 +8011,16 @@ ${attachment ? `
         {/* User Auth Info box and Sign Out trigger */}
         <div className="border-t border-white/5 pt-4 mt-6 space-y-4">
           <div className="bg-white/5 p-3.5 rounded-2xl border border-white/5">
-            <span className="block text-[9px] font-bold text-slate-400 mb-1">الموظف المسؤول</span>
+            <span className="block text-[9px] font-bold text-slate-400 mb-1">الحساب النشط</span>
             <b className="block text-xs font-black text-amber-300">{currentUser.name}</b>
             <span className="block text-[10px] font-bold text-slate-400 mt-1">
-              {currentUser.role === "admin" ? "أدمن الإدارة" : (currentUser.role === "cashier" ? "💰 كاشير / أمين صندوق" : (currentUser.role === "supervisor" ? "مشرف عام / رئيسي" : "موظف الفرع"))}
+              {isGlobalSuperAdmin(currentUser)
+                ? "👑 السوبر أدمن (الوحيد)"
+                : isIndividualAccount
+                  ? "👤 حساب أفراد مستقل"
+                  : currentUser.role === "admin"
+                    ? `🏛️ المدير العام (${currentUser.entity_type === "مؤسسة" ? "للمؤسسة" : "للشركة"})`
+                    : (currentUser.role === "cashier" ? "💰 كاشير / أمين صندوق" : (currentUser.role === "supervisor" ? "مشرف عام / رئيسي" : "موظف الفرع"))}
               {userRegionFilter && ` • ${userRegionFilter}`}
             </span>
           </div>
@@ -7340,7 +8037,7 @@ ${attachment ? `
           {activeSlug && (
             <button
               type="button"
-              onClick={() => navigateToSlug(null)}
+              onClick={() => navigateToSlug(null, { logout: true })}
               className="w-full py-2.5 bg-slate-900/60 hover:bg-slate-850 text-slate-400 hover:text-amber-400 border border-white/5 hover:border-amber-500/25 text-[10px] font-black rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
             >
               🏢 العودة للبوابة المركزية
@@ -7366,17 +8063,21 @@ ${attachment ? `
                 <h1 className="text-base sm:text-lg md:text-xl font-black tracking-tight font-sans whitespace-nowrap">
                   <span className="text-transparent bg-clip-text bg-gradient-to-l from-amber-300 via-yellow-100 to-amber-500 drop-shadow-[0_2px_12px_rgba(245,158,11,0.3)]">
                     {(() => {
-                      const matched = selectedCompanyId === "all" || companies.length === 0
+                      if (isIndividualAccount) return `مساحة العمل الشخصية • ${currentUser.name}`;
+                      const authComps = getAuthorizedCompanies();
+                      const matched = selectedCompanyId === "all" || authComps.length === 0
                         ? null
-                        : companies.find((c) => c.id === selectedCompanyId);
+                        : authComps.find((c) => c.id === selectedCompanyId);
                       if (matched) return matched.name;
-                      return selectedCompanyId === "all" ? "منظومة كافة الشركات المصرحة" : "شركة عرب وورلد للمقاولات والعقود";
+                      return isGlobalSuperAdmin(currentUser) && selectedCompanyId === "all"
+                        ? "منظومة كافة الشركات المصرحة"
+                        : (authComps[0]?.name || "منظومة الإدارة المالية");
                     })()}
                   </span>
                 </h1>
               </div>
 
-              {/* Active Company Selector Pill (if admin or multiple companies) */}
+              {/* Active Company Selector Pill (only Super Admin or authorized multi-company user) */}
               {currentUser && getAuthorizedCompanies().length > 1 && (
                 <div className="flex items-center gap-2 bg-slate-900/90 border border-amber-500/30 hover:border-amber-400/60 rounded-xl px-3 py-1.5 shadow-lg transition-all">
                   <span className="text-[11px] font-black text-amber-400 shrink-0 flex items-center gap-1">
@@ -7399,7 +8100,7 @@ ${attachment ? `
                     }}
                     className="bg-slate-950 border border-slate-700/80 text-amber-200 font-black text-xs rounded-lg px-2 py-1 focus:outline-none focus:border-amber-400 cursor-pointer"
                   >
-                    {activeSection !== "financial_reports" && (
+                    {isGlobalSuperAdmin(currentUser) && activeSection !== "financial_reports" && (
                       <option value="all" className="bg-slate-950 text-amber-300 font-bold">✨ كل الشركات ({getAuthorizedCompanies().length})</option>
                     )}
                     {getAuthorizedCompanies().map((c) => (
@@ -7410,7 +8111,7 @@ ${attachment ? `
               )}
 
               {/* Super Admin Company Approvals Quick Notification Badge */}
-              {currentUser?.role === "admin" && companies.filter(c => c.status === "بانتظار موافقة السوبر أدمن" || c.status === "pending_approval").length > 0 && (
+              {isGlobalSuperAdmin(currentUser) && companies.filter(c => c.status === "بانتظار موافقة السوبر أدمن" || c.status === "pending_approval").length > 0 && (
                 <button
                   type="button"
                   onClick={() => setActiveSection("companies")}
@@ -7525,6 +8226,36 @@ ${attachment ? `
             />
           )}
 
+          {activeSection === "messages" && (currentUser?.role === "admin" || can("messages") || currentUser?.perms?.messages === undefined) && (
+            <InternalMessaging
+              currentUser={currentUser}
+              users={getAuthorizedUsers()}
+              companies={getAuthorizedCompanies()}
+              selectedCompanyId={selectedCompanyId}
+              onSelectCompany={(cId) => setSelectedCompanyId(cId)}
+              showToast={showToast}
+              isSuperAdmin={isGlobalSuperAdmin(currentUser)}
+              onOpenExcelFile={(file) => {
+                setIncomingExcelForSheet(file);
+                setActiveSection("spreadsheets");
+              }}
+            />
+          )}
+
+          {activeSection === "spreadsheets" && (currentUser?.role === "admin" || can("spreadsheets") || currentUser?.perms?.spreadsheets === undefined) && (
+            <CompanySpreadsheets
+              currentUser={currentUser}
+              users={getAuthorizedUsers()}
+              companies={getAuthorizedCompanies()}
+              selectedCompanyId={selectedCompanyId}
+              onSelectCompany={(cId) => setSelectedCompanyId(cId)}
+              showToast={showToast}
+              isSuperAdmin={isGlobalSuperAdmin(currentUser)}
+              incomingFile={incomingExcelForSheet}
+              onClearIncomingFile={() => setIncomingExcelForSheet(null)}
+            />
+          )}
+
           {activeSection === "installments" && (currentUser?.role === "admin" || can("installmentsView")) && (
             <Installments
               currentUser={currentUser}
@@ -7556,7 +8287,7 @@ ${attachment ? `
               isAdmin={currentUser?.role === "admin" || can("treasury")}
               selectedCompanyId={selectedCompanyId}
               onUpdate={loadEverything}
-              companies={companies}
+              companies={getAuthorizedCompanies()}
               currentUser={currentUser}
               projects={getVisibleProjects()}
               workers={getVisibleWorkers()}
@@ -8463,7 +9194,7 @@ ${attachment ? `
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                   <div className="flex items-center gap-2">
                     <h3 className="text-sm font-black text-white flex items-center gap-2">
-                      <span>📁</span> سجل الخطابات الرسمية الصادرة ({letters.length})
+                      <span>📁</span> سجل الخطابات الرسمية الصادرة ({getVisibleLetters().length})
                     </h3>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
@@ -8473,7 +9204,7 @@ ${attachment ? `
                         onChange={(e) => setLetterCompanyFilter(e.target.value)}
                         className="px-3 py-1.5 bg-slate-950/70 border border-slate-800 rounded-xl text-xs font-bold text-amber-300 focus:outline-none focus:border-amber-500 font-sans"
                       >
-                        <option value="all">🏢 كل الشركات المصدرة ({letters.length})</option>
+                        <option value="all">🏢 كل الشركات المصدرة ({getVisibleLetters().length})</option>
                         {getAuthorizedCompanies().map((c) => (
                           <option key={c.id} value={c.id}>
                             {c.name}
@@ -8508,7 +9239,7 @@ ${attachment ? `
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
-                      {letters
+                      {getVisibleLetters()
                         .filter((l) => {
                           if (letterCompanyFilter !== "all") {
                             const lComp = l.company_id || "arab_world";
@@ -8582,7 +9313,7 @@ ${attachment ? `
                             </td>
                           </tr>
                         ))}
-                      {letters.length === 0 && (
+                      {getVisibleLetters().length === 0 && (
                         <tr>
                           <td colSpan={8} className="text-center py-8 text-slate-500 font-bold">
                             لا توجد خطابات رسمية مسجلة حالياً. استخدم النموذج أعلاه لإنشاء أول خطاب رسمي على الكليشة.
@@ -10022,10 +10753,10 @@ ${attachment ? `
           {activeSection === "attendance" && (currentUser?.role === "admin" || can("attendance")) && (
             <Attendance
               currentUser={currentUser}
-              workers={workers}
-              projects={projects}
-              attendances={attendances}
-              companies={companies}
+              workers={getVisibleWorkers()}
+              projects={getVisibleProjects()}
+              attendances={attendances.filter((a) => isCompanyAuthorized(a.company_id))}
+              companies={getAuthorizedCompanies()}
               selectedCompanyId={selectedCompanyId}
               onUpdate={loadEverything}
               showToast={showToast}
@@ -10204,21 +10935,23 @@ ${attachment ? `
                           );
                         }).map((p, idx) => {
                           const pName = p.name ? p.name.trim() : "";
-                          const pCompanyId = p.company_id;
-                          const pWorkers = workers.filter(w => (w.project && w.project.trim() === pName) || (pCompanyId && w.company_id === pCompanyId));
+                          const pCompanyId = p.company_id || "arab_world";
+                          const pWorkers = workers.filter(w => (w.company_id || "arab_world") === pCompanyId && w.project && w.project.trim() === pName);
                           const pWorkerIds = new Set(pWorkers.map(w => w.id));
 
                           const pLaborPayments = payments.filter(pay => 
-                            (pay.project && pay.project.trim() === pName) ||
-                            (pay.worker_id && pWorkerIds.has(pay.worker_id))
+                            (pay.company_id || "arab_world") === pCompanyId &&
+                            ((pay.project && pay.project.trim() === pName) || (pay.worker_id && pWorkerIds.has(pay.worker_id)))
                           ).reduce((sum, pay) => sum + Number(pay.amount || 0), 0);
 
                           const pLaborExpenses = expenses.filter(exp => 
+                            (exp.company_id || "arab_world") === pCompanyId &&
                             (exp.project && exp.project.trim() === pName) && 
                             (exp.category === "عمالة" || (exp.notes && exp.notes.includes("عمالة")))
                           ).reduce((sum, exp) => sum + Number(exp.amount || 0), 0);
 
                           const pLaborContracts = installments.filter(inst =>
+                            (inst.company_id || "arab_world") === pCompanyId &&
                             (inst.project && inst.project.trim() === pName) &&
                             (inst.contract_direction === "مصروفات عمالة" || awExtractContractDirection(inst.notes || "") === "مصروفات عمالة")
                           ).reduce((sum, inst) => sum + Number(inst.amount || 0), 0);
@@ -10997,10 +11730,11 @@ ${attachment ? `
           {activeSection === "hr" && (currentUser?.role === "admin" || can("workers")) && (
             <HRModule
               currentUser={currentUser}
-              projects={projects}
-              companies={companies}
+              projects={getVisibleProjects()}
+              companies={getAuthorizedCompanies()}
               selectedCompanyId={selectedCompanyId}
               showToast={showToast}
+              isSuperAdmin={isGlobalSuperAdmin(currentUser)}
             />
           )}
 
@@ -11008,40 +11742,45 @@ ${attachment ? `
           {activeSection === "company_assets" && (currentUser?.role === "admin" || can("companies")) && (
             <CompanyAssets
               currentUser={currentUser}
-              companies={companies}
+              companies={getAuthorizedCompanies()}
               selectedCompanyId={selectedCompanyId}
               showToast={showToast}
+              isSuperAdmin={isGlobalSuperAdmin(currentUser)}
             />
           )}
 
-          {/* Arab World Subcontracts Management Section */}
+          {/* Company Subcontracts Management Section */}
           {activeSection === "subcontracts" && (currentUser?.role === "admin" || can("installmentsView")) && (
             <SubcontractsManager
               selectedCompanyId={selectedCompanyId}
               showToast={showToast}
               can={can}
+              currentUser={currentUser}
+              companies={getAuthorizedCompanies()}
+              isSuperAdmin={isGlobalSuperAdmin(currentUser)}
             />
           )}
 
           {/* Financial Reports Section - Strictly Isolated to Active Company */}
           {activeSection === "financial_reports" && (currentUser?.role === "admin" || can("financial_reports")) && (
             <FinancialReports
-              receipts={receipts}
-              payments={payments}
-              expenses={expenses}
-              installments={installments}
-              projects={projects}
-              companies={companies}
-              extracts={extracts}
+              receipts={receipts.filter((r) => isCompanyAuthorized(r.company_id))}
+              payments={payments.filter((p) => isCompanyAuthorized(p.company_id))}
+              expenses={expenses.filter((e) => isCompanyAuthorized(e.company_id))}
+              installments={installments.filter((i) => isCompanyAuthorized(i.company_id))}
+              projects={getVisibleProjects()}
+              companies={getAuthorizedCompanies()}
+              extracts={extracts.filter((ex) => isCompanyAuthorized(ex.company_id))}
               currentUser={currentUser}
-              activeCompanyId={selectedCompanyId !== "all" ? selectedCompanyId : (currentUser?.company_id || companies[0]?.id || "arab_world")}
+              activeCompanyId={selectedCompanyId !== "all" ? selectedCompanyId : (currentUser?.company_id || getAuthorizedCompanies()[0]?.id || "arab_world")}
+              isSuperAdmin={isGlobalSuperAdmin(currentUser)}
             />
           )}
 
           {/* Companies and Extracts Section */}
-          {activeSection === "companies" && (currentUser?.role === "admin" || can("companies")) && (
+          {activeSection === "companies" && !isIndividualAccount && (currentUser?.role === "admin" || can("companies")) && (
             <div className="space-y-8">
-              {currentUser?.role === "admin" && (
+              {isGlobalSuperAdmin(currentUser) && (
                 <SuperAdminCompanyApprovals
                   companies={companies}
                   users={users}
@@ -11056,21 +11795,48 @@ ${attachment ? `
               {/* Companies Tab Layout Header */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 
-                {/* 1. Add/Edit Company Form Card */}
+                {/* 1. Add/Edit Company Form Card (New Company Creation exclusive to Single Super Admin; Company GM edits only their own profile) */}
+                {(isGlobalSuperAdmin(currentUser) || editCompanyId) ? (
                 <div className="lg:col-span-1 bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-4">
                   <div className="border-b border-slate-800 pb-3">
                     <h3 className="text-base font-black text-white flex items-center gap-2 font-sans">
                       <span>🏢</span>
-                      <span>{editCompanyId ? "تعديل بطاقة الشركة" : "إضافة شركة جديدة"}</span>
+                      <span>{editCompanyId ? "تعديل بطاقة المنشأة" : "إضافة شركة / مؤسسة جديدة"}</span>
                     </h3>
-                    <p className="text-[10px] text-slate-400 mt-1">تسجيل وتحديث كيانات الشركة التابعة وقيم رأسمالها.</p>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      {editCompanyId ? "تحديث بيانات وهوية المنشأة المعتمدة." : "تسجيل كيانات جديدة في المنظومة بواسطة السوبر أدمن."}
+                    </p>
                   </div>
 
                   <form onSubmit={saveCompanyLogic} className="space-y-4">
                     <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setCEntityType("شركة")}
+                          className={`py-2 rounded-xl text-xs font-black border transition-all cursor-pointer ${
+                            cEntityType === "شركة"
+                              ? "bg-amber-500/20 border-amber-400 text-amber-300"
+                              : "bg-slate-950/40 border-slate-800 text-slate-400"
+                          }`}
+                        >
+                          🏢 شركة
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCEntityType("مؤسسة")}
+                          className={`py-2 rounded-xl text-xs font-black border transition-all cursor-pointer ${
+                            cEntityType === "مؤسسة"
+                              ? "bg-amber-500/20 border-amber-400 text-amber-300"
+                              : "bg-slate-950/40 border-slate-800 text-slate-400"
+                          }`}
+                        >
+                          🏛️ مؤسسة
+                        </button>
+                      </div>
                       {/* Section 1: Basic Company Info */}
                       <div className="space-y-1">
-                        <label className="text-[10px] text-slate-400 font-bold">اسم الشركة بالكامل *</label>
+                        <label className="text-[10px] text-slate-400 font-bold">اسم {cEntityType === "مؤسسة" ? "المؤسسة" : "الشركة"} بالكامل *</label>
                         <input
                           required
                           type="text"
@@ -11375,6 +12141,15 @@ ${attachment ? `
                     </div>
                   </form>
                 </div>
+                ) : (
+                  <div className="lg:col-span-1 bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl flex flex-col justify-center items-center text-center space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-2xl">🏛️</div>
+                    <h4 className="text-sm font-black text-white">صلاحيات المدير العام للمنشأة</h4>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      يمكنك تعديل هوية منشأتك والشعار والكليشة وتصاميم عروض الأسعار بالضغط على زر <b>تعديل</b> في بطاقة منشأتك. إنشاء أو استعراض الشركات الأخرى حصري للسوبر أدمن فقط.
+                    </p>
+                  </div>
+                )}
 
                 {/* 2. Registered Companies Grid List */}
                 <div className="lg:col-span-2 space-y-6">
@@ -11383,18 +12158,26 @@ ${attachment ? `
                       <div>
                         <h3 className="text-base font-black text-white flex items-center gap-2 font-sans">
                           <span>🏢</span>
-                          <span>الشركات التابعة المسجلة ({companies.length})</span>
+                          <span>
+                            {isGlobalSuperAdmin(currentUser)
+                              ? `جميع الشركات والمؤسسات المسجلة بالمنصة (${getAuthorizedCompanies().length})`
+                              : `بيانات ${getAuthorizedCompanies()[0]?.entity_type === "مؤسسة" ? "المؤسسة" : "الشركة"} المعتمدة`}
+                          </span>
                         </h3>
-                        <p className="text-[10px] text-slate-400 mt-1">الكيانات والمؤسسات الحالية تحت المنظومة الموحدة.</p>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          {isGlobalSuperAdmin(currentUser)
+                            ? "جميع الكيانات والمؤسسات المسجلة بالمنصة (تظهر للسوبر أدمن الوحيد فقط)."
+                            : "ملف المنشأة المعزول — لا يمكن الاطلاع على أي منشآت أخرى بالمنصة."}
+                        </p>
                       </div>
                     </div>
 
                     <div className="mb-5 bg-gradient-to-l from-amber-500/10 via-yellow-500/5 to-transparent border border-amber-500/20 rounded-2xl p-4 flex gap-3 text-right">
                       <span className="text-xl">🛡️</span>
                       <div className="space-y-1 font-sans">
-                        <span className="block text-xs font-black text-amber-400">نظام الشركات المستقلة مفعل (Demo Mode)</span>
+                        <span className="block text-xs font-black text-amber-400">عزل تام لكل شركة ومؤسسة وسرية كاملة للبيانات</span>
                         <p className="text-[10px] text-slate-300 leading-relaxed font-medium">
-                          لقد تم تحويل المنظومة بنجاح لنظام متعدد الشركات المستقلة. كل شركة تمتلك خزائنها، وموظفيها، وعقودها، وسنداتها، وعملائها، ومصروفاتها بشكل معزول تماماً ومستقل منطقياً. لا يمكن لأي موظف أو مستخدم رؤية بيانات شركة أخرى، بينما يملك الأدمن العام فقط الصلاحية الكاملة للتنقل بين الشركات عبر خيار <b>"الشركة النشطة"</b> بأعلى الشاشة لإدارة المنظومة بشكل متكامل.
+                          كل شركة أو مؤسسة تمتلك مراسلاتها الداخلية، ملفاتها، خزائنها، وموظفيها وعقودها وسنداتها بشكل معزول تماماً. لا تظهر قائمة الشركات المسجلة إلا للسوبر أدمن الوحيد.
                         </p>
                       </div>
                     </div>
@@ -11450,6 +12233,7 @@ ${attachment ? `
                                         const prefs = getCompanyDesignPrefs(comp);
                                         setEditCompanyId(comp.id);
                                         setCName(comp.name || "");
+                                        setCEntityType(comp.entity_type === "مؤسسة" ? "مؤسسة" : "شركة");
                                         setCActivity(comp.activity || (comp as any).sub_title || (comp as any).company_activity || "");
                                         setCRegister(comp.commercial_register || comp.record_no || "");
                                         setCTaxNo(comp.tax_no || "");
@@ -11481,13 +12265,15 @@ ${attachment ? `
                                     >
                                       تعديل
                                     </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => onDeleteCompany(comp.id, comp.name)}
-                                      className="p-1 px-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg text-[10px] font-bold transition-all"
-                                    >
-                                      حذف
-                                    </button>
+                                    {isGlobalSuperAdmin(currentUser) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onDeleteCompany(comp.id, comp.name)}
+                                        className="p-1 px-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg text-[10px] font-bold transition-all"
+                                      >
+                                        حذف
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
 
@@ -11556,7 +12342,7 @@ ${attachment ? `
                     <p className="text-[10px] text-slate-400 mt-1">تسجيل مستخلص مالي معتمد لمشاريع وعمالات الشركات.</p>
                   </div>
 
-                  {companies.length === 0 ? (
+                  {getAuthorizedCompanies().length === 0 ? (
                     <div className="text-center py-6 bg-slate-950/20 border border-slate-800 rounded-xl">
                       <p className="text-[10px] text-slate-500 font-sans">يجب إضافة شركة واحدة على الأقل قبل تسجيل مستخلصات مالية.</p>
                     </div>
@@ -11682,13 +12468,13 @@ ${attachment ? `
                       <div>
                         <h3 className="text-base font-black text-white flex items-center gap-2 font-sans">
                           <span>📋</span>
-                          <span>المستخلصات المالية للشركات التابعة ({extracts.length})</span>
+                          <span>المستخلصات المالية للمنشأة ({getVisibleExtracts().length})</span>
                         </h3>
                         <p className="text-[10px] text-slate-400 mt-1">تتبع كشوف المستخلصات المقررة ومستويات التحصيل.</p>
                       </div>
                     </div>
 
-                    {extracts.length === 0 ? (
+                    {getVisibleExtracts().length === 0 ? (
                       <div className="text-center py-12 bg-slate-950/20 border border-slate-800 rounded-2xl">
                         <span className="text-3xl block">📄</span>
                         <h4 className="text-xs font-black text-slate-400 mt-3">لا توجد كشوف مستخلصات مقيدة</h4>
@@ -11776,33 +12562,34 @@ ${attachment ? `
           {/* Secure permissions and User configuration block */}
           {activeSection === "users" && (currentUser?.role === "admin" || can("users")) && (
             <div className="space-y-6">
-              {/* Pending Approvals Section */}
-              {users.filter((u) => u.status === "بانتظار الاعتماد" || u.status === "pending").length > 0 && (
+              {/* Pending Approvals Section (Strict Company Isolation) */}
+              {users.filter((u) => (u.status === "بانتظار الاعتماد" || u.status === "pending") && (isGlobalSuperAdmin(currentUser) || (isCompanyAuthorized(u.company_id) && !u.requested_company_name))).length > 0 && (
                 <div className="bg-slate-900/80 backdrop-blur-xl border-2 border-amber-500/40 rounded-3xl p-6 shadow-2xl space-y-5 relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/10 rounded-full blur-2xl pointer-events-none"></div>
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-800 pb-4 gap-3">
                     <div>
                       <h3 className="text-base font-black text-white flex items-center gap-2">
                         <span className="text-amber-400 text-lg">⏳</span>
-                        <span>طلبات التسجيل وتأسيس الشركات بانتظار موافقة الأدمن</span>
+                        <span>{isGlobalSuperAdmin(currentUser) ? "طلبات التسجيل وتأسيس الشركات بانتظار موافقة السوبر أدمن" : "طلبات انضمام الموظفين للشركة بانتظار الاعتماد"}</span>
                         <span className="bg-amber-500 text-slate-950 font-black text-[11px] px-2.5 py-0.5 rounded-full">
-                          {users.filter((u) => u.status === "بانتظار الاعتماد" || u.status === "pending").length} طلب
+                          {users.filter((u) => (u.status === "بانتظار الاعتماد" || u.status === "pending") && (isGlobalSuperAdmin(currentUser) || (isCompanyAuthorized(u.company_id) && !u.requested_company_name))).length} طلب
                         </span>
                       </h3>
                       <p className="text-[11px] text-slate-400 font-bold mt-1">
-                        يمكنك قبول الطلبات وتحديد الشركة التابعة والصلاحيات المطلوبة للمستخدمين الجدد.
+                        يمكنك قبول الطلبات وتحديد الصلاحيات المطلوبة للمستخدمين التابعين لمنشأتك.
                       </p>
                     </div>
                   </div>
 
                   <div className="space-y-4">
                     {users
-                      .filter((u) => u.status === "بانتظار الاعتماد" || u.status === "pending")
+                      .filter((u) => (u.status === "بانتظار الاعتماد" || u.status === "pending") && (isGlobalSuperAdmin(currentUser) || (isCompanyAuthorized(u.company_id) && !u.requested_company_name)))
                       .map((pendingUser) => (
                         <PendingUserApprovalCard
                           key={pendingUser.id}
                           pendingUser={pendingUser}
-                          companies={companies}
+                          companies={getAuthorizedCompanies()}
+                          isSuperAdmin={isGlobalSuperAdmin(currentUser)}
                           onApprove={handleApprovePendingUser}
                           onReject={handleRejectPendingUser}
                         />
@@ -11811,8 +12598,8 @@ ${attachment ? `
                 </div>
               )}
 
-              {/* Supabase Connection Setup Card & Backup/Restore - Restricted Exclusively to System Admin */}
-              {currentUser?.role === "admin" && (
+              {/* Supabase Connection Setup Card & Backup/Restore - Restricted Exclusively to Single Super Admin */}
+              {isGlobalSuperAdmin(currentUser) && (
                 <>
                   <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-850 pb-4 gap-3">
@@ -12273,26 +13060,33 @@ CREATE TABLE extracts (
                     </h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div className="space-y-1 md:col-span-2">
-                        <label className="text-[10px] text-slate-400 font-black block">ربط الحساب بملف عامل / موظف حالي (اختياري)</label>
-                        <select
-                          value={workers.find((w) => w.worker_id === uWorkerId)?.worker_id || ""}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            const selectedW = workers.find((w) => w.worker_id === val);
-                            if (selectedW) {
-                              setUWorkerId(selectedW.worker_id || "");
-                              setUName(selectedW.name || "");
-                            }
-                          }}
-                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none text-slate-950 bg-white"
-                        >
-                          <option value="" className="text-slate-950">-- غير مربوط بملف عامل (إدخال يدوي) --</option>
-                          {workers.map((w) => (
-                            <option key={w.id} value={w.worker_id} className="text-slate-950">
-                              👷 {w.name} - {w.job} {w.worker_id ? `(${w.worker_id})` : ""}
-                            </option>
-                          ))}
-                        </select>
+                        <label className="text-[10px] text-slate-400 font-black block">ربط الحساب بملف عامل / موظف حالي للشركة (اختياري)</label>
+                        {(() => {
+                          const targetWorkersList = getVisibleWorkers().filter(
+                            (w) => !uCompanyId || (w.company_id || "arab_world") === uCompanyId
+                          );
+                          return (
+                            <select
+                              value={targetWorkersList.find((w) => w.worker_id === uWorkerId)?.worker_id || ""}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const selectedW = targetWorkersList.find((w) => w.worker_id === val);
+                                if (selectedW) {
+                                  setUWorkerId(selectedW.worker_id || "");
+                                  setUName(selectedW.name || "");
+                                }
+                              }}
+                              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none text-slate-950 bg-white"
+                            >
+                              <option value="" className="text-slate-950">-- غير مربوط بملف عامل (إدخال يدوي) --</option>
+                              {targetWorkersList.map((w) => (
+                                <option key={w.id} value={w.worker_id} className="text-slate-950">
+                                  👷 {w.name} - {w.job} {w.worker_id ? `(${w.worker_id})` : ""}
+                                </option>
+                              ))}
+                            </select>
+                          );
+                        })()}
                       </div>
 
                       <div className="space-y-1">
@@ -12357,6 +13151,7 @@ CREATE TABLE extracts (
                             if (newRole === "employee") {
                               setUPerms({
                                 attendance: true,
+                                messages: true,
                                 dashboard: false,
                                 installmentsView: false,
                                 installmentsAdd: false,
@@ -12384,10 +13179,12 @@ CREATE TABLE extracts (
                             } else if (newRole === "cashier") {
                               setUPerms({
                                 ...CASHIER_DEFAULT_PERMS,
+                                messages: true,
                               });
                             } else if (newRole === "supervisor") {
                               setUPerms({
                                 attendance: true,
+                                messages: true,
                                 dashboard: true,
                                 installmentsView: true,
                                 installmentsAdd: true,
@@ -12419,7 +13216,7 @@ CREATE TABLE extracts (
                           <option value="employee" className="text-slate-950">👨‍💼 موظف فرع محدود</option>
                           <option value="cashier" className="text-slate-950">💰 كاشير / محاسب صندوق (تحصيل وسندات وخزينة)</option>
                           <option value="supervisor" className="text-slate-950">🕵️‍♂️ مشرف مكتب عام / رئيسي</option>
-                          <option value="admin" className="text-slate-950">👑 أدمن مكتب عام</option>
+                          <option value="admin" className="text-slate-950">🏛️ المدير العام للشركة / المؤسسة</option>
                         </select>
                       </div>
 
@@ -12436,17 +13233,14 @@ CREATE TABLE extracts (
                       </div>
 
                       <div className="space-y-1">
-                        <label className="text-[10px] text-slate-400 font-black block">🏢 الشركة التابع لها الحساب *</label>
+                        <label className="text-[10px] text-slate-400 font-black block">🏢 الشركة / المؤسسة التابع لها الحساب *</label>
                         <select
                           required
                           value={uCompanyId}
                           onChange={(e) => setUCompanyId(e.target.value)}
                           className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none text-slate-950 bg-white font-sans"
                         >
-                          <option value="" className="text-slate-950">اختر الشركة التابع لها الحساب...</option>
-                          {currentUser?.role === "admin" && (
-                            <option value="all" className="text-amber-600 font-black">🌐 أدمن عام لكل الشركات (Super Admin)</option>
-                          )}
+                          <option value="" className="text-slate-950">اختر الشركة أو المؤسسة التابع لها الحساب...</option>
                           {getAuthorizedCompanies().map((c) => (
                             <option key={c.id} value={c.id} className="text-slate-950 font-bold">🏢 {c.name}</option>
                           ))}
@@ -12845,6 +13639,8 @@ CREATE TABLE extracts (
                             <span>
                               {k === "attendance" && "📍 بصمة الحضور والانصراف (GPS)"}
                               {k === "dashboard" && "📊 الرئيسية (لوحة التحكم العامة)"}
+                              {k === "messages" && "💬 المراسلات الداخلية وملفات الشركة (واتساب)"}
+                              {k === "spreadsheets" && "📊 جداول الإكسل والمشاركة السحابية"}
                               {k === "pos" && "🛒 الكاشير ونقاط البيع (الوصول العام)"}
                               {k === "pos_cashier" && "💳 شاشة الكاشير والبيع السريع"}
                               {k === "pos_inventory" && "📦 إدارة المخزون وتعديل الأرصدة"}
@@ -12899,7 +13695,12 @@ CREATE TABLE extracts (
                     (تنبيه: إذا لم تقم بتحديد أي خزنة، فسيتم منح الموظف صلاحية رؤية كافة الخزائن بشكل افتراضي لتسهيل العمل دون قيود)
                   </p>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 mt-2">
-                    {getStoredTreasuries(selectedCompanyIdForPerms !== "global" ? selectedCompanyIdForPerms : selectedCompanyId, companies).map((tName) => {
+                    {getStoredTreasuries(
+                      selectedCompanyIdForPerms !== "global"
+                        ? selectedCompanyIdForPerms
+                        : (uCompanyId || (selectedCompanyId !== "all" ? selectedCompanyId : currentUser?.company_id || getAuthorizedCompanies()[0]?.id)),
+                      getAuthorizedCompanies()
+                    ).map((tName) => {
                       const permKey = `safe_${tName}`;
                       const hasCompObj = !!uCompanyPerms[selectedCompanyIdForPerms];
                       const isCustomActive = selectedCompanyIdForPerms === "global" || (hasCompObj && !uCompanyPerms[selectedCompanyIdForPerms].use_global);
@@ -12989,7 +13790,15 @@ CREATE TABLE extracts (
                           </td>
                           <td className="py-3 px-3">
                             <div className="flex flex-col gap-1 items-start">
-                              <span className="px-2.5 py-0.5 rounded text-[10px] bg-slate-800 text-amber-400 font-bold border border-slate-700">{u.role === "admin" ? "👑 أدمن مكتب عام" : (u.role === "cashier" ? "💰 كاشير / أمين صندوق" : (u.role === "supervisor" ? "🕵️‍♂️ مشرف مكتب عام" : "👨‍💼 موظف فرع"))}</span>
+                              <span className="px-2.5 py-0.5 rounded text-[10px] bg-slate-800 text-amber-400 font-bold border border-slate-700">
+                                {isGlobalSuperAdmin(u)
+                                  ? "👑 السوبر أدمن (الوحيد)"
+                                  : u.account_type === "individual"
+                                    ? "👤 حساب أفراد مستقل"
+                                    : u.role === "admin"
+                                      ? `🏛️ المدير العام (${u.entity_type === "مؤسسة" ? "للمؤسسة" : "للشركة"})`
+                                      : (u.role === "cashier" ? "💰 كاشير / أمين صندوق" : (u.role === "supervisor" ? "🕵️‍♂️ مشرف مكتب عام" : "👨‍💼 موظف فرع"))}
+                              </span>
                               <span className={`px-2 py-0.5 rounded text-[9px] font-bold font-sans ${u.status === "نشط" || !u.status ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25" : "bg-rose-500/10 text-rose-400 border border-rose-500/25"}`}>
                                 {u.status === "نشط" || !u.status ? "🟢 نشط" : "🔴 موقوف"}
                               </span>
@@ -12997,7 +13806,7 @@ CREATE TABLE extracts (
                           </td>
                           <td className="py-3 px-3">
                             <span className="block font-black text-indigo-400">
-                              🏢 {companies.find((c) => c.id === u.company_id)?.name || "أدمن عام (كل الشركات)"}
+                              🏢 {companies.find((c) => c.id === u.company_id)?.name || (isGlobalSuperAdmin(u) ? "مدير المنصة بالكامل (السوبر أدمن الوحيد)" : (u.account_type === "individual" ? "حساب أفراد مستقل" : "منشأة غير محددة"))}
                             </span>
                             <span className="block text-[10px] text-slate-500 font-bold mt-0.5 font-sans">
                               📍 النطاق: {permissionsObj.region || "كامل فروع المملكة"}
@@ -13079,12 +13888,12 @@ CREATE TABLE extracts (
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] text-slate-400 font-bold shrink-0">ملف الموظف المعين:</span>
                       <select
-                        value={selfSelectedWorkerId || workers.find((w) => w.worker_id === (currentUser?.perms?.worker_id || currentUser?.worker_id))?.id || ""}
+                        value={selfSelectedWorkerId || getVisibleWorkers().find((w) => w.worker_id === (currentUser?.perms?.worker_id || currentUser?.worker_id))?.id || ""}
                         onChange={(e) => setSelfSelectedWorkerId(e.target.value)}
                         className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-amber-400 focus:outline-none cursor-pointer max-w-xs text-slate-950 bg-white"
                       >
                         <option value="" className="text-slate-950">--- اختر ملف موظف للتصفح الجاري ---</option>
-                        {workers.map((w) => (
+                        {getVisibleWorkers().map((w) => (
                           <option key={w.id} value={w.id} className="text-slate-950">
                             👷 {w.name} - {w.job} ({w.worker_id || "دون ID"})
                           </option>
@@ -13103,11 +13912,12 @@ CREATE TABLE extracts (
                 {/* Main Logic: Retrieve profile worker */}
                 {(() => {
                   const hasFullAccess = currentUser?.role === "admin" || can("workers");
-                  const myLinkedWorkerId = workers.find((w) => w.worker_id === (currentUser?.perms?.worker_id || currentUser?.worker_id))?.id;
+                  const visibleWorkersList = getVisibleWorkers();
+                  const myLinkedWorkerId = visibleWorkersList.find((w) => w.worker_id === (currentUser?.perms?.worker_id || currentUser?.worker_id))?.id;
                   
                   // If hasFullAccess, allow selfSelectedWorkerId, else strictly force their own linked worker ID
                   const targetWorkerId = hasFullAccess ? (selfSelectedWorkerId || myLinkedWorkerId) : myLinkedWorkerId;
-                  const profileWorker = workers.find((w) => w.id === targetWorkerId);
+                  const profileWorker = visibleWorkersList.find((w) => w.id === targetWorkerId);
 
                   if (!profileWorker) {
                     return (
@@ -13576,7 +14386,7 @@ CREATE TABLE extracts (
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-850/30">
-                    {sessions.map((s, idx) => (
+                    {getVisibleSessions().map((s, idx) => (
                       <tr key={idx} className="hover:bg-slate-800/10 h-10 transition-colors">
                         <td className="py-2 px-3 font-bold text-white">{s.name}</td>
                         <td className="py-2 px-3 font-mono font-semibold text-slate-400">{s.code}</td>
@@ -13603,6 +14413,8 @@ CREATE TABLE extracts (
           {activeSection !== "my_profile" && !(
             (activeSection === "dashboard" && (currentUser?.role === "admin" || can("dashboard"))) ||
             (activeSection === "pos" && (currentUser?.role === "admin" || can("pos") || !isAttendanceOnly)) ||
+            (activeSection === "messages" && (currentUser?.role === "admin" || can("messages") || currentUser?.perms?.messages === undefined)) ||
+            (activeSection === "spreadsheets" && (currentUser?.role === "admin" || can("spreadsheets") || currentUser?.perms?.spreadsheets === undefined)) ||
             (activeSection === "attendance" && (currentUser?.role === "admin" || can("attendance"))) ||
             (activeSection === "installments" && (currentUser?.role === "admin" || can("installmentsView"))) ||
             (activeSection === "subcontracts" && (currentUser?.role === "admin" || can("installmentsView"))) ||

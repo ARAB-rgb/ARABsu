@@ -308,19 +308,47 @@ class SupabaseEmulationChain {
       const { data, error } = await q;
       if (error) throw error;
 
-      // Fallback to Firestore if companies/users table is empty in Supabase due to RLS policies
-      if (
-        (this.table === "companies" || this.table === "users") &&
-        (!data || data.length === 0)
-      ) {
+      // Merge Firestore rows for companies/users so accounts/companies stored in Firestore are never invisible during login
+      if (this.table === "companies" || this.table === "users") {
+        let fDocs: any[] = [];
         try {
           const colRef = collection(db, this.table);
           const snap = await getDocs(colRef);
-          const fDocs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-          return { data: fDocs, error: null };
+          fDocs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          if (this.filters.length > 0) {
+            fDocs = fDocs.filter((item: any) =>
+              this.filters.every((f) => item?.[f.field] === f.val)
+            );
+          }
         } catch (e) {
-          console.warn(`Failed to fallback to Firestore ${this.table}:`, e);
+          console.warn(`Failed to merge Firestore ${this.table}:`, e);
         }
+
+        const mergedMap = new Map<string, any>();
+        for (const item of (Array.isArray(data) ? data : [])) {
+          const key = item?.id ? String(item.id) : `__sb_${mergedMap.size}`;
+          if (!mergedMap.has(key)) mergedMap.set(key, item);
+        }
+        for (const item of fDocs) {
+          const key = item?.id ? String(item.id) : `__fs_${mergedMap.size}`;
+          if (!mergedMap.has(key)) {
+            mergedMap.set(key, item);
+          }
+        }
+
+        let merged = Array.from(mergedMap.values());
+        if (this.orderField) {
+          const orderKey = this.orderField;
+          const asc = this.orderAscending;
+          merged.sort((a: any, b: any) => {
+            const valA = a?.[orderKey] ?? "";
+            const valB = b?.[orderKey] ?? "";
+            if (valA < valB) return asc ? -1 : 1;
+            if (valA > valB) return asc ? 1 : -1;
+            return 0;
+          });
+        }
+        return { data: merged, error: null };
       }
 
       return { data, error: null };
@@ -490,6 +518,16 @@ class SupabaseEmulationChain {
         }
 
         let data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (this.table === "companies" || this.table === "users") {
+          const seen = new Set<string>();
+          data = data.filter((item: any) => {
+            const key = item?.id ? String(item.id) : "";
+            if (!key) return true;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        }
         if (this.orderField) {
           const orderKey = this.orderField;
           const asc = this.orderAscending;
@@ -1046,6 +1084,7 @@ export async function logSession(user: User, action: string, customDeviceInfo?: 
       name: user.name,
       code: user.code,
       role: user.role,
+      company_id: user.company_id || undefined,
       time: new Date().toLocaleString("ar-SA"),
       action,
       device_info: customDeviceInfo || dev.deviceString,

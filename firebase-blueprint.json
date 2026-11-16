@@ -623,6 +623,86 @@
         "status": { "type": "string" }
       },
       "required": ["id", "name", "phone", "license_number"]
+    },
+    "CompanyMessage": {
+      "title": "CompanyMessage",
+      "description": "Company-isolated internal WhatsApp-style chat messages",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "channel_id": { "type": "string" },
+        "channel_type": { "type": "string", "enum": ["general", "dm"] },
+        "sender_id": { "type": "string" },
+        "sender_name": { "type": "string" },
+        "sender_role_label": { "type": "string" },
+        "recipient_id": { "type": "string" },
+        "recipient_name": { "type": "string" },
+        "text": { "type": "string" },
+        "file_id": { "type": "string" },
+        "file_name": { "type": "string" },
+        "file_size": { "type": "number" },
+        "file_mime": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "created_ms": { "type": "number" }
+      },
+      "required": ["id", "company_id", "channel_id", "sender_id", "sender_name", "created_ms"]
+    },
+    "CompanyFile": {
+      "title": "CompanyFile",
+      "description": "Company-isolated uploaded files for internal sharing and download",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "channel_id": { "type": "string" },
+        "folder": { "type": "string" },
+        "file_name": { "type": "string" },
+        "file_size": { "type": "number" },
+        "mime_type": { "type": "string" },
+        "data_url": { "type": "string" },
+        "is_chunked": { "type": "boolean" },
+        "chunk_count": { "type": "number" },
+        "uploaded_by_id": { "type": "string" },
+        "uploaded_by_name": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "created_ms": { "type": "number" }
+      },
+      "required": ["id", "company_id", "folder", "file_name", "file_size", "uploaded_by_id", "created_ms"]
+    },
+    "CompanyFileChunk": {
+      "title": "CompanyFileChunk",
+      "description": "Chunked payload storage for company-isolated uploaded files",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "file_id": { "type": "string" },
+        "chunk_index": { "type": "number" },
+        "data": { "type": "string" }
+      },
+      "required": ["id", "company_id", "file_id", "chunk_index", "data"]
+    },
+    "CompanySpreadsheet": {
+      "title": "CompanySpreadsheet",
+      "description": "Company-isolated interactive Excel workbook with sheets, formulas, formatting, and internal sharing",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "sheets": { "type": "array" },
+        "active_sheet_index": { "type": "number" },
+        "shared_mode": { "type": "string" },
+        "owner_id": { "type": "string" },
+        "owner_name": { "type": "string" },
+        "updated_by_name": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "created_ms": { "type": "number" }
+      },
+      "required": ["id", "company_id", "title", "sheets", "shared_mode", "owner_id", "created_ms"]
     }
   },
   "firestore": {
@@ -729,6 +809,22 @@
     "hr_drivers": {
       "schema": "Driver",
       "description": "Company drivers and vehicle fleet personnel"
+    },
+    "company_messages": {
+      "schema": "CompanyMessage",
+      "description": "Real-time internal messaging isolated per company"
+    },
+    "company_files": {
+      "schema": "CompanyFile",
+      "description": "Company-isolated document and media vault"
+    },
+    "company_file_chunks": {
+      "schema": "CompanyFileChunk",
+      "description": "Chunked payload segments for large company files"
+    },
+    "company_spreadsheets": {
+      "schema": "CompanySpreadsheet",
+      "description": "Company-isolated interactive Excel workbooks"
     }
   }
 }

@@ -82,6 +82,7 @@ interface FinancialReportsProps {
   extracts: Extract[];
   currentUser: AuthUser | null;
   activeCompanyId?: string;
+  isSuperAdmin?: boolean;
 }
 
 type ReportType = "balance_sheet" | "income_statement" | "cash_flow";
@@ -95,7 +96,8 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
   companies = [],
   extracts = [],
   currentUser,
-  activeCompanyId
+  activeCompanyId,
+  isSuperAdmin = false
 }) => {
   const [reportType, setReportType] = useState<ReportType>("income_statement");
   const [isPrintAll, setIsPrintAll] = useState<boolean>(false);
@@ -161,10 +163,10 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({
 
   const authorizedCompanies = useMemo(() => {
     if (!currentUser) return companies;
-    if (currentUser.role === "admin") return companies;
+    if (isSuperAdmin) return companies;
     const userCompany = currentUser.company_id || "arab_world";
     return companies.filter((c) => c.id === userCompany);
-  }, [currentUser, companies]);
+  }, [currentUser, companies, isSuperAdmin]);
 
   // Reset filters (preserves selected company)
   const resetFilters = () => {

@@ -169,19 +169,23 @@ export const Attendance: React.FC<AttendanceProps> = ({
       .replace(/\s+/g, " ");
   };
 
-  // Automatically match logged in user to their Worker Profile using multi-tier fallback (ID, Code, Normalized Name)
+  // Automatically match logged in user to their Worker Profile using multi-tier fallback scoped to authorized company
   const matchedWorker = workers.find((w) => {
     if (!currentUser) return false;
-    
+    const wComp = w.company_id || "arab_world";
+    const uComp = currentUser.company_id || (selectedCompanyId !== "all" ? selectedCompanyId : "arab_world");
+    if (currentUser.company_id && wComp !== currentUser.company_id) return false;
+    if (selectedCompanyId && selectedCompanyId !== "all" && wComp !== selectedCompanyId) return false;
+
     // 1. Match by primary key id (UUID)
     if (currentUser.worker_id && w.id === currentUser.worker_id) return true;
-    
+
     // 2. Match by string-based worker_id code (e.g. employee card / ID)
-    if (currentUser.worker_id && w.worker_id === currentUser.worker_id) return true;
-    
+    if (currentUser.worker_id && w.worker_id === currentUser.worker_id && wComp === uComp) return true;
+
     // 3. Match by robust normalized name comparison
-    if (normalizeArabic(w.name) === normalizeArabic(currentUser.name)) return true;
-    
+    if (normalizeArabic(w.name) === normalizeArabic(currentUser.name) && wComp === uComp) return true;
+
     return false;
   });
 
@@ -308,7 +312,7 @@ export const Attendance: React.FC<AttendanceProps> = ({
     return attendances.filter((a) => {
       // Company level restriction
       if (selectedCompanyId && selectedCompanyId !== "all") {
-        if (a.company_id && a.company_id !== selectedCompanyId) return false;
+        if ((a.company_id || "arab_world") !== selectedCompanyId) return false;
       }
 
       // Worker permission level: Employees can ONLY view their own records!
@@ -362,18 +366,22 @@ export const Attendance: React.FC<AttendanceProps> = ({
 
   // Calculate Absences and Leaves for the stats section
   const leavesCount = workers.filter((w) => {
-    if (selectedCompanyId && selectedCompanyId !== "all" && w.company_id !== selectedCompanyId) return false;
+    if (selectedCompanyId && selectedCompanyId !== "all" && (w.company_id || "arab_world") !== selectedCompanyId) return false;
     if (isEmployee && matchedWorker && w.id !== matchedWorker.id) return false;
     return w.status === "إجازة";
   }).length;
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const clockedInTodayIds = attendances
-    .filter((a) => a.date === todayStr)
+    .filter((a) => {
+      if (a.date !== todayStr) return false;
+      if (selectedCompanyId && selectedCompanyId !== "all" && (a.company_id || "arab_world") !== selectedCompanyId) return false;
+      return true;
+    })
     .map((a) => a.worker_id);
 
   const activeOnDutyWorkers = workers.filter((w) => {
-    if (selectedCompanyId && selectedCompanyId !== "all" && w.company_id !== selectedCompanyId) return false;
+    if (selectedCompanyId && selectedCompanyId !== "all" && (w.company_id || "arab_world") !== selectedCompanyId) return false;
     if (isEmployee && matchedWorker && w.id !== matchedWorker.id) return false;
     return w.status === "على رأس العمل";
   });

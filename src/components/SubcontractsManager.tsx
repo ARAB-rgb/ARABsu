@@ -11,7 +11,7 @@ import {
   Building2, Users, DollarSign, Calendar, Upload, Settings,
   Briefcase, ChevronDown, Sparkles, X, ArrowUpDown
 } from "lucide-react";
-import { Subcontract, SubcontractParty } from "../types";
+import { Company, Subcontract, SubcontractParty, User as AuthUser } from "../types";
 import { sb } from "../db";
 import {
   ARAB_WORLD_DEFAULT_PARTY, CONTRACT_CATEGORIES_LIST, CONTRACT_STATUS_CONFIG,
@@ -25,12 +25,18 @@ import { DelayLogsTab } from "./subcontracts/DelayLogsTab";
 
 interface SubcontractsManagerProps {
   selectedCompanyId?: string;
+  currentUser?: AuthUser | null;
+  companies?: Company[];
+  isSuperAdmin?: boolean;
   showToast: (msg: string, type?: "success" | "error" | "info" | "warning") => void;
   can?: (permission: string) => boolean;
 }
 
 export const SubcontractsManager: React.FC<SubcontractsManagerProps> = ({
   selectedCompanyId,
+  currentUser,
+  companies = [],
+  isSuperAdmin = false,
   showToast,
 }) => {
   const [contracts, setContracts] = useState<Subcontract[]>([]);
@@ -48,12 +54,38 @@ export const SubcontractsManager: React.FC<SubcontractsManagerProps> = ({
   const [previewContract, setPreviewContract] = useState<Subcontract | null>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
 
-  // Arab World Settings (Logo & First Party Credentials)
+  const isAllMode = Boolean(isSuperAdmin && selectedCompanyId === "all");
+  const activeCompanyId =
+    !isSuperAdmin && currentUser?.company_id
+      ? currentUser.company_id
+      : selectedCompanyId && selectedCompanyId !== "all"
+      ? selectedCompanyId
+      : companies[0]?.id || "arab_world";
+
+  const activeCompanyObj = companies.find((c) => c.id === activeCompanyId);
+  const settingsDocId = activeCompanyId === "arab_world" ? "aw_settings" : `sub_settings_${activeCompanyId}`;
+
+  const defaultCompanyParty: SubcontractParty = useMemo(() => {
+    if (activeCompanyObj && activeCompanyId !== "arab_world") {
+      return {
+        ...ARAB_WORLD_DEFAULT_PARTY,
+        legal_name: activeCompanyObj.name,
+        cr_number: (activeCompanyObj as any).commercial_register || "",
+        tax_number: (activeCompanyObj as any).tax_no || "",
+        phone: (activeCompanyObj as any).phone || "",
+        national_address: (activeCompanyObj as any).address || "",
+        representative_name: (activeCompanyObj as any).manager || "المدير العام",
+      };
+    }
+    return ARAB_WORLD_DEFAULT_PARTY;
+  }, [activeCompanyId, activeCompanyObj]);
+
+  // Company Settings (Logo & First Party Credentials)
   const [companySettings, setCompanySettings] = useState<{
     logo_url?: string;
     first_party: SubcontractParty;
   }>({
-    first_party: ARAB_WORLD_DEFAULT_PARTY,
+    first_party: defaultCompanyParty,
   });
 
   // Filters & Search
@@ -61,34 +93,45 @@ export const SubcontractsManager: React.FC<SubcontractsManagerProps> = ({
   const [statusFilter, setStatusFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
 
-  // Load Settings and Contracts from Cloud Firestore
+  // Load Settings and Contracts from Cloud Firestore scoped to company
   const loadData = async () => {
     setLoading(true);
     try {
-      // 1. Load Settings
+      // 1. Load Settings for this company only
       const { data: settsList } = await sb
         .from("subcontract_settings")
         .select("*")
-        .eq("id", "aw_settings");
+        .eq("id", settingsDocId);
 
       const setts = settsList?.[0];
       if (setts) {
         setCompanySettings({
           logo_url: setts.logo_url || "",
-          first_party: setts.first_party || ARAB_WORLD_DEFAULT_PARTY,
+          first_party: setts.first_party || defaultCompanyParty,
+        });
+      } else {
+        setCompanySettings({
+          logo_url: (activeCompanyObj as any)?.logo_url || "",
+          first_party: defaultCompanyParty,
         });
       }
 
-      // 2. Load Contracts
+      // 2. Load Contracts isolated to authorized company
       const { data, error } = await sb
         .from("subcontracts")
         .select("*")
         .order("created_at", { ascending: false });
 
       if (!error && data) {
-        setContracts(data as Subcontract[]);
-        if (data.length > 0 && !selectedContract) {
-          setSelectedContract(data[0] as Subcontract);
+        const scoped = (data as Subcontract[]).filter((c) => {
+          if (isAllMode) return true;
+          return (c.company_id || "arab_world") === activeCompanyId;
+        });
+        setContracts(scoped);
+        if (scoped.length > 0 && (!selectedContract || !scoped.some((s) => s.id === selectedContract.id))) {
+          setSelectedContract(scoped[0]);
+        } else if (scoped.length === 0) {
+          setSelectedContract(null);
         }
       }
     } catch (e) {
@@ -100,22 +143,26 @@ export const SubcontractsManager: React.FC<SubcontractsManagerProps> = ({
 
   useEffect(() => {
     loadData();
-  }, [selectedCompanyId]);
+  }, [activeCompanyId, isAllMode]);
 
-  // Save or Update Contract in Firestore
+  // Save or Update Contract in Firestore scoped strictly to activeCompanyId
   const handleSaveContract = async (contract: Subcontract, isApproval = false) => {
     try {
-      const exists = contracts.some((c) => c.id === contract.id);
+      const scopedContract: Subcontract = {
+        ...contract,
+        company_id: contract.company_id || activeCompanyId,
+      };
+      const exists = contracts.some((c) => c.id === scopedContract.id);
       if (exists) {
-        const { error } = await sb.from("subcontracts").update(contract).eq("id", contract.id);
+        const { error } = await sb.from("subcontracts").update(scopedContract).eq("id", scopedContract.id);
         if (error) throw error;
         showToast(isApproval ? "تم اعتماد العقد بنجاح" : "تم تحديث بيانات العقد", "success");
       } else {
-        const { error } = await sb.from("subcontracts").insert(contract);
+        const { error } = await sb.from("subcontracts").insert(scopedContract);
         if (error) throw error;
         showToast(isApproval ? "تم اعتماد وإصدار العقد رسمياً" : "تم حفظ مسودة العقد بنجاح", "success");
       }
-      setSelectedContract(contract);
+      setSelectedContract(scopedContract);
       loadData();
     } catch (e: any) {
       showToast("حدث خطأ أثناء حفظ العقد: " + e.message, "error");
@@ -164,18 +211,19 @@ export const SubcontractsManager: React.FC<SubcontractsManagerProps> = ({
     }
   };
 
-  // Save Company Settings (Logo and Legal Credentials)
+  // Save Company Settings (Logo and Legal Credentials) isolated per company
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const { error } = await sb.from("subcontract_settings").upsert({
-        id: "aw_settings",
+        id: settingsDocId,
+        company_id: activeCompanyId,
         logo_url: companySettings.logo_url,
         first_party: companySettings.first_party,
         updated_at: new Date().toISOString(),
       });
       if (error) throw error;
-      showToast("تم حفظ إعدادات وهوية عرب وورلد بنجاح", "success");
+      showToast("تم حفظ إعدادات وهوية المنشأة في العقود بنجاح", "success");
       setShowSettingsModal(false);
     } catch (e: any) {
       showToast("فشل حفظ الإعدادات: " + e.message, "error");
@@ -294,7 +342,7 @@ export const SubcontractsManager: React.FC<SubcontractsManagerProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">
-                  عرب وورلد للمقاولات
+                  {activeCompanyObj?.name || companySettings.first_party.legal_name || "عرب وورلد للمقاولات"}
                 </h1>
                 <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-amber-500/15 text-amber-300 border border-amber-500/30">
                   إدارة عقود المقاولات من الباطن
@@ -754,7 +802,7 @@ export const SubcontractsManager: React.FC<SubcontractsManagerProps> = ({
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-black text-white flex items-center gap-2">
                 <Settings className="w-5 h-5 text-amber-400" />
-                <span>إعدادات هوية «عرب وورلد للمقاولات» والشعار المعتمد</span>
+                <span>إعدادات هوية «{activeCompanyObj?.name || companySettings.first_party.legal_name}» والشعار المعتمد</span>
               </h3>
               <button
                 type="button"

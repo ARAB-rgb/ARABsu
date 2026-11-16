@@ -64,6 +64,8 @@ export interface UserPerms {
   hr_drivers_view?: boolean;
   hr_drivers_add?: boolean;
   hr_drivers_delete?: boolean;
+  messages?: boolean;
+  spreadsheets?: boolean;
 }
 
 export const CASHIER_DEFAULT_PERMS: UserPerms = {
@@ -96,6 +98,8 @@ export const CASHIER_DEFAULT_PERMS: UserPerms = {
   companies: false,
   users: false,
   sessions: false,
+  messages: true,
+  spreadsheets: true,
   print: true,
   dashTopCards: true,
   dashCollection: true,
@@ -128,6 +132,8 @@ export interface User {
   requested_company_address?: string;
   requested_company_record_no?: string;
   requested_company_tax_no?: string;
+  account_type?: "individual" | "company_member" | "company_manager" | "super_admin";
+  entity_type?: "شركة" | "مؤسسة";
 }
 
 export interface Installment {
@@ -365,6 +371,7 @@ export interface Company {
   approval_date?: string;   // تاريخ اعتماد السوبر أدمن
   approved_by?: string;     // اسم السوبر أدمن المعتمد
   rejection_reason?: string;// سبب رفض الطلب إن وجد
+  entity_type?: "شركة" | "مؤسسة";
   created_at?: string;
 }
 
@@ -754,3 +761,86 @@ export interface PosCompanyConfig {
   updated_at?: string;
   updated_by?: string;
 }
+
+export interface CompanyMessage {
+  id: string;
+  company_id: string;
+  channel_id: string;
+  channel_type: "general" | "dm";
+  sender_id: string;
+  sender_name: string;
+  sender_role_label?: string;
+  recipient_id?: string;
+  recipient_name?: string;
+  text: string;
+  reply_to_id?: string;
+  reply_to_sender?: string;
+  reply_to_text?: string;
+  file_id?: string;
+  file_name?: string;
+  file_size?: number;
+  file_mime?: string;
+  file_preview_url?: string;
+  created_at: string;
+  created_ms: number;
+}
+
+export interface CompanyFile {
+  id: string;
+  company_id: string;
+  channel_id?: string;
+  folder: string;
+  file_name: string;
+  file_size: number;
+  mime_type: string;
+  data_url?: string;
+  is_chunked?: boolean;
+  chunk_count?: number;
+  uploaded_by_id: string;
+  uploaded_by_name: string;
+  notes?: string;
+  created_at: string;
+  created_ms: number;
+}
+
+export interface SpreadsheetCellStyle {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  align?: "right" | "center" | "left";
+  color?: string;
+  bg?: string;
+  numFmt?: "general" | "number" | "currency" | "percent" | "date";
+}
+
+export interface SpreadsheetCell {
+  raw: string;
+  style?: SpreadsheetCellStyle;
+}
+
+export interface SpreadsheetSheet {
+  id: string;
+  name: string;
+  rows: number;
+  cols: number;
+  colWidths?: Record<number, number>;
+  freezeHeader?: boolean;
+  cells: Record<string, SpreadsheetCell>;
+}
+
+export interface CompanySpreadsheet {
+  id: string;
+  company_id: string;
+  title: string;
+  description?: string;
+  sheets: SpreadsheetSheet[];
+  active_sheet_index?: number;
+  shared_mode: "company_edit" | "company_view" | "private";
+  owner_id: string;
+  owner_name: string;
+  updated_by_name?: string;
+  created_at: string;
+  updated_at: string;
+  created_ms: number;
+}
+

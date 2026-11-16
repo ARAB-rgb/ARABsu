@@ -153,6 +153,7 @@ interface HRProps {
   projects: Project[];
   companies: Company[];
   selectedCompanyId: string;
+  isSuperAdmin?: boolean;
   showToast: (msg: string, type?: "success" | "error" | "info" | "warning") => void;
   onPaymentCreated?: () => void;
 }
@@ -162,6 +163,7 @@ export const HRModule: React.FC<HRProps> = ({
   projects,
   companies,
   selectedCompanyId,
+  isSuperAdmin = false,
   showToast,
   onPaymentCreated
 }) => {
@@ -200,15 +202,15 @@ export const HRModule: React.FC<HRProps> = ({
   const [selectedMonth, setSelectedMonth] = useState<string>(new Date().toISOString().slice(0, 7)); // e.g. "2026-07"
   const [deductionCategoryFilter, setDeductionCategoryFilter] = useState<string>("all");
 
-  // Active Company ID based on session and choice
-  const activeCompanyId = currentUser?.role === "admin"
-    ? (selectedCompanyId === "all" ? (currentUser.company_id || "arab_world") : selectedCompanyId)
-    : (currentUser?.company_id || "arab_world");
+  // Active Company ID strictly locked to user's own company unless Super Admin
+  const activeCompanyId = isSuperAdmin
+    ? (selectedCompanyId === "all" ? (currentUser?.company_id || companies[0]?.id || "arab_world") : selectedCompanyId)
+    : (currentUser?.company_id || (selectedCompanyId !== "all" ? selectedCompanyId : "arab_world"));
 
   // Check custom visual permissions
   const can = (perm: string): boolean => {
     if (!currentUser) return false;
-    if (currentUser.role === "admin") return true;
+    if (isSuperAdmin || currentUser.role === "admin") return true;
     
     // Check company perms if available
     if (currentUser.company_perms && currentUser.company_perms[activeCompanyId]) {

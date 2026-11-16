@@ -15,6 +15,7 @@ interface CompanyAssetsProps {
   currentUser: AuthUser | null;
   companies: Company[];
   selectedCompanyId: string;
+  isSuperAdmin?: boolean;
   showToast: (msg: string, type?: "success" | "error" | "info" | "warning") => void;
 }
 
@@ -22,6 +23,7 @@ export function CompanyAssets({
   currentUser,
   companies,
   selectedCompanyId,
+  isSuperAdmin = false,
   showToast,
 }: CompanyAssetsProps) {
   // State for assets list
@@ -67,6 +69,7 @@ export function CompanyAssets({
         name: user.name,
         code: user.code,
         role: user.role,
+        company_id: user.company_id || undefined,
         time: new Date().toLocaleTimeString("ar-SA"),
         action,
         created_at: new Date().toISOString(),
@@ -79,14 +82,14 @@ export function CompanyAssets({
 
   const getAuthorizedCompanies = () => {
     if (!currentUser) return [];
-    if (currentUser.role === "admin") return companies;
+    if (isSuperAdmin) return companies;
     const userCompany = currentUser.company_id || "arab_world";
     return companies.filter((c) => c.id === userCompany);
   };
 
   const isCompanyAuthorized = (compId: string | undefined | null) => {
     if (!currentUser) return false;
-    if (currentUser.role === "admin") return true;
+    if (isSuperAdmin) return true;
     const userCompany = currentUser.company_id || "arab_world";
     const itemCompany = compId || "arab_world";
     return itemCompany === userCompany;

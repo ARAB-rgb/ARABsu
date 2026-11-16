@@ -215,8 +215,23 @@ export function PosCashierModule({
   const [barcodeShowCode, setBarcodeShowCode] = useState<boolean>(true);
   const [barcodeFormat, setBarcodeFormat] = useState<"sheet_24" | "sheet_40" | "thermal_single">("sheet_24");
 
+  // Effective Super Admin check
+  const isGlobalSuperAdminUser = Boolean(
+    currentUser &&
+      (currentUser.account_type === "super_admin" ||
+        currentUser.id === "admin_1007363904" ||
+        currentUser.code === "1007363904")
+  );
+
   // Active Company Information
-  const activeCompany = companies.find(c => c.id === selectedCompanyId) || companies[0] || {
+  const effectiveCompanyId =
+    !isGlobalSuperAdminUser && currentUser?.company_id
+      ? currentUser.company_id
+      : selectedCompanyId && selectedCompanyId !== "all"
+      ? selectedCompanyId
+      : companies[0]?.id || "arab_world";
+
+  const activeCompany = companies.find(c => c.id === effectiveCompanyId) || companies[0] || {
     id: "arab_world",
     name: "شركة عرب وورلد للمقاولات والتجارة",
     tax_no: "300099988800003",
@@ -274,9 +289,14 @@ export function PosCashierModule({
       const allCats: PosCategory[] = catRes.data || [];
       const allConfigs: PosCompanyConfig[] = cfgRes.data || [];
 
-      // Filter by active company if specified
-      const compFilter = (item: any) =>
-        !selectedCompanyId || selectedCompanyId === "all" || !item.company_id || item.company_id === selectedCompanyId;
+      // Strictly isolate items to the effective company (Super Admin in "all" mode sees all authorized items)
+      const compFilter = (item: any) => {
+        if (isGlobalSuperAdminUser && (!selectedCompanyId || selectedCompanyId === "all")) {
+          return true;
+        }
+        const itemComp = item.company_id || "arab_world";
+        return itemComp === activeCompany.id;
+      };
 
       setProducts(allProds.filter(compFilter));
       setSuppliers(allSupps.filter(compFilter));

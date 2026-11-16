@@ -19,14 +19,18 @@ interface SaasLandingPortalProps {
     adminCode: string;
     adminPass: string;
     domain_extension?: string;
+    entity_type?: "شركة" | "مؤسسة";
   }) => Promise<boolean>;
   onRegisterPendingUser?: (data: {
     name: string;
     email: string;
     google_id?: string;
     phone: string;
-    role?: "admin" | "cashier" | "employee";
+    role?: "admin" | "cashier" | "employee" | "supervisor";
+    account_type?: "individual" | "company_member" | "company_manager";
+    entity_type?: "شركة" | "مؤسسة";
     company_id?: string;
+    join_company_slug?: string;
     requested_company_name?: string;
     requested_company_slug?: string;
     requested_company_manager?: string;
@@ -43,7 +47,10 @@ interface SaasLandingPortalProps {
     phone?: string;
     email?: string;
     role: "cashier" | "employee" | "supervisor" | "admin";
+    account_type?: "individual" | "company_member" | "company_manager";
+    entity_type?: "شركة" | "مؤسسة";
     company_id?: string;
+    join_company_slug?: string;
     create_company?: boolean;
     company_name?: string;
     company_slug?: string;
@@ -55,7 +62,7 @@ interface SaasLandingPortalProps {
     company_city?: string;
     company_record_no?: string;
     company_tax_no?: string;
-  }) => Promise<{ success: boolean; message?: string }>;
+  }) => Promise<{ success: boolean; message?: string; pendingApproval?: boolean; companyName?: string; companySlug?: string }>;
   onNavigateToSlug: (slug: string) => void;
   showToast: (message: string, type?: "success" | "error" | "info") => void;
 
@@ -97,6 +104,24 @@ export function SaasLandingPortal({
   setGoogleUser,
   handleLinkGoogle,
 }: SaasLandingPortalProps) {
+  const uniqueCompanies = React.useMemo(() => {
+    const map = new Map<string, Company>();
+    for (const c of companies) {
+      if (c && c.id && !map.has(c.id)) {
+        map.set(c.id, c);
+      }
+    }
+    return Array.from(map.values());
+  }, [companies]);
+
+  const approvedCompanies = React.useMemo(
+    () =>
+      uniqueCompanies.filter(
+        (c) => !c.status || c.status === "نشط" || c.status === "active" || c.status === "معتمدة"
+      ),
+    [uniqueCompanies]
+  );
+
   const [showRegisterForm, setShowRegisterForm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -110,9 +135,10 @@ export function SaasLandingPortal({
   const [regPassConfirm, setRegPassConfirm] = useState("");
   const [regPhone, setRegPhone] = useState("");
   const [regEmail, setRegEmail] = useState("");
-  const [regType, setRegType] = useState<"existing" | "new_company">("existing");
+  const [regType, setRegType] = useState<"individual" | "existing" | "new_company">("individual");
   const [regRole, setRegRole] = useState<"cashier" | "employee" | "supervisor">("cashier");
-  const [regCompId, setRegCompId] = useState(companies[0]?.id || "arab_world");
+  const [regJoinSlug, setRegJoinSlug] = useState("");
+  const [regEntityType, setRegEntityType] = useState<"شركة" | "مؤسسة">("شركة");
   const [regNewCompName, setRegNewCompName] = useState("");
   const [regNewCompSlug, setRegNewCompSlug] = useState("");
   const [regNewCompCapital, setRegNewCompCapital] = useState<number | "">("");
@@ -137,9 +163,13 @@ export function SaasLandingPortal({
       showToast("كلمة المرور يجب أن تتكون من 4 خانات على الأقل!", "error");
       return;
     }
+    if (regType === "existing" && !regJoinSlug.trim()) {
+      showToast("يرجى إدخال رابط / كود المنشأة المراد الانضمام إليها!", "error");
+      return;
+    }
     if (regType === "new_company") {
       if (!regNewCompName.trim() || !regNewCompSlug.trim()) {
-        showToast("يرجى إدخال اسم الشركة ورابطها المخصص للإنشاء!", "error");
+        showToast("يرجى إدخال اسم الشركة/المؤسسة ورابطها المخصص للإنشاء!", "error");
         return;
       }
     }
@@ -157,8 +187,10 @@ export function SaasLandingPortal({
           password: regPass.trim(),
           phone: regPhone.trim(),
           email: regEmail.trim(),
-          role: regType === "new_company" ? "admin" : regRole,
-          company_id: regType === "existing" ? regCompId : undefined,
+          role: regType === "new_company" ? "admin" : (regType === "individual" ? "admin" : regRole),
+          account_type: regType === "individual" ? "individual" : (regType === "new_company" ? "company_manager" : "company_member"),
+          entity_type: regType === "new_company" ? regEntityType : undefined,
+          join_company_slug: regType === "existing" ? regJoinSlug.trim().toLowerCase() : undefined,
           create_company: regType === "new_company",
           company_name: regType === "new_company" ? regNewCompName.trim() : undefined,
           company_slug: regType === "new_company" ? regNewCompSlug.trim() : undefined,
@@ -173,18 +205,25 @@ export function SaasLandingPortal({
         });
 
         if (res.success) {
+          const submittedCompName = res.companyName || regNewCompName.trim();
+          const submittedCompSlug = res.companySlug || regNewCompSlug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
           setRegName("");
           setRegCode("");
           setRegPass("");
           setRegPassConfirm("");
           setRegPhone("");
           setRegEmail("");
+          setRegJoinSlug("");
           setRegNewCompName("");
           setRegNewCompSlug("");
           setRegNewCompCapital("");
           setRegNewCompDomain("");
           setRegNewCompRecordNo("");
           setRegNewCompTaxNo("");
+          if (res.pendingApproval && submittedCompName) {
+            setPendingApprovalModal({ name: submittedCompName, slug: submittedCompSlug });
+            setAuthMode("login");
+          }
         }
       } else {
         showToast("خدمة التسجيل المباشر غير مهيأة حالياً", "error");
@@ -200,9 +239,10 @@ export function SaasLandingPortal({
   // New Google Pending Registration States
   const [gRegName, setGRegName] = useState("");
   const [gRegPhone, setGRegPhone] = useState("");
-  const [gReqMode, setGReqMode] = useState<"new_company" | "existing">("new_company");
-  const [gReqRole, setGReqRole] = useState<"admin" | "cashier" | "employee">("cashier");
-  const [gSelectedCompId, setGSelectedCompId] = useState(companies[0]?.id || "arab_world");
+  const [gReqMode, setGReqMode] = useState<"individual" | "new_company" | "existing">("individual");
+  const [gReqRole, setGReqRole] = useState<"cashier" | "employee" | "supervisor">("cashier");
+  const [gJoinCompSlug, setGJoinCompSlug] = useState("");
+  const [gReqEntityType, setGReqEntityType] = useState<"شركة" | "مؤسسة">("شركة");
   const [gReqCompName, setGReqCompName] = useState("");
   const [gReqCompSlug, setGReqCompSlug] = useState("");
   const [gReqCompManager, setGReqCompManager] = useState("");
@@ -229,24 +269,35 @@ export function SaasLandingPortal({
       return;
     }
 
+    if (gReqMode === "existing" && !gJoinCompSlug.trim()) {
+      showToast("يرجى إدخال رابط / كود المنشأة المراد الانضمام لها!", "error");
+      return;
+    }
+
     if (gReqMode === "new_company") {
       if (!gReqCompName.trim() || !gReqCompSlug.trim()) {
-        showToast("يرجى تحديد اسم الشركة ورابطها المخصص للإنشاء!", "error");
+        showToast("يرجى تحديد اسم الشركة/المؤسسة ورابطها المخصص للإنشاء!", "error");
         return;
       }
     }
 
     setIsSubmitting(true);
     try {
+      const submittedMode = gReqMode;
+      const submittedCompName = gReqCompName.trim();
+      const submittedCompSlug = gReqCompSlug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+
       const success = await onRegisterPendingUser?.({
         name: nameToSubmit,
         email: googleUser.email,
         google_id: googleUser.uid,
         phone: gRegPhone.trim(),
-        role: gReqMode === "new_company" ? "admin" : gReqRole,
-        company_id: gReqMode === "existing" ? gSelectedCompId : undefined,
-        requested_company_name: gReqMode === "new_company" ? gReqCompName.trim() : undefined,
-        requested_company_slug: gReqMode === "new_company" ? gReqCompSlug.trim() : undefined,
+        role: gReqMode === "new_company" || gReqMode === "individual" ? "admin" : gReqRole,
+        account_type: gReqMode === "individual" ? "individual" : (gReqMode === "new_company" ? "company_manager" : "company_member"),
+        entity_type: gReqMode === "new_company" ? gReqEntityType : undefined,
+        join_company_slug: gReqMode === "existing" ? gJoinCompSlug.trim().toLowerCase() : undefined,
+        requested_company_name: gReqMode === "new_company" ? submittedCompName : undefined,
+        requested_company_slug: gReqMode === "new_company" ? submittedCompSlug : undefined,
         requested_company_manager: gReqMode === "new_company" ? (gReqCompManager.trim() || nameToSubmit) : undefined,
         requested_company_phone: gReqMode === "new_company" ? (gReqCompPhone.trim() || gRegPhone.trim()) : undefined,
         requested_company_capital: gReqMode === "new_company" ? Number(gReqCompCapital || 0) : undefined,
@@ -255,11 +306,15 @@ export function SaasLandingPortal({
       if (success) {
         setGRegName("");
         setGRegPhone("");
+        setGJoinCompSlug("");
         setGReqCompName("");
         setGReqCompSlug("");
         setGReqCompManager("");
         setGReqCompPhone("");
         setGReqCompCapital("");
+        if (submittedMode === "new_company" && submittedCompName) {
+          setPendingApprovalModal({ name: submittedCompName, slug: submittedCompSlug });
+        }
       }
     } catch (err: any) {
       showToast("حدث خطأ أثناء إرسال طلب التسجيل: " + (err.message || err), "error");
@@ -272,6 +327,7 @@ export function SaasLandingPortal({
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [domainExtension, setDomainExtension] = useState(".com");
+  const [entityType, setEntityType] = useState<"شركة" | "مؤسسة">("شركة");
   const [manager, setManager] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
@@ -290,12 +346,12 @@ export function SaasLandingPortal({
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !slug.trim() || !adminCode.trim() || !adminPass.trim()) {
-      showToast("يرجى ملء الحقول الإلزامية الاسم، الرابط، وكود السر للمشرف!", "error");
+      showToast("يرجى ملء الحقول الإلزامية الاسم، الرابط، وكود السر للمدير العام!", "error");
       return;
     }
 
     if (slug.length < 3) {
-      showToast("رابط الشركة المخصص يجب أن يتكون من 3 رموز على الأقل!", "error");
+      showToast("رابط المنشأة المخصص يجب أن يتكون من 3 رموز على الأقل!", "error");
       return;
     }
 
@@ -303,7 +359,7 @@ export function SaasLandingPortal({
       (c) => (c.slug || "").toLowerCase() === slug.toLowerCase() || c.id.toLowerCase() === slug.toLowerCase()
     );
     if (slugExists) {
-      showToast("رابط الشركة هذا مستخدم بالفعل! يرجى اختيار رابط مخصص آخر.", "error");
+      showToast("رابط المنشأة هذا مستخدم بالفعل! يرجى اختيار رابط مخصص آخر.", "error");
       return;
     }
 
@@ -321,6 +377,7 @@ export function SaasLandingPortal({
         adminCode: adminCode.trim(),
         adminPass: adminPass.trim(),
         domain_extension: domainExtension,
+        entity_type: entityType,
       });
 
       if (success) {
@@ -455,40 +512,81 @@ export function SaasLandingPortal({
                     />
                   </div>
 
-                  {/* Company Request Selection */}
+                  {/* Company / Individual Request Selection */}
                   <div className="space-y-2 pt-1 border-t border-slate-800/80">
-                    <label className="text-[10px] font-black text-amber-400 block">نوع الطلب والمنشأة</label>
-                    
-                    <div className="grid grid-cols-2 gap-2">
+                    <label className="text-[10px] font-black text-amber-400 block">نوع الحساب والتسجيل</label>
+
+                    <div className="grid grid-cols-3 gap-2">
                       <button
                         type="button"
-                        onClick={() => setGReqMode("new_company")}
-                        className={`p-2.5 rounded-xl border text-right text-[10px] font-bold transition-all cursor-pointer ${
-                          gReqMode === "new_company"
+                        onClick={() => setGReqMode("individual")}
+                        className={`p-2 rounded-xl border text-center text-[10px] font-bold transition-all cursor-pointer ${
+                          gReqMode === "individual"
                             ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
                             : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-300"
                         }`}
                       >
-                        🏢 طلب تأسيس شركة جديدة
+                        👤 تسجيل فرد
                       </button>
 
                       <button
                         type="button"
                         onClick={() => setGReqMode("existing")}
-                        className={`p-2.5 rounded-xl border text-right text-[10px] font-bold transition-all cursor-pointer ${
+                        className={`p-2 rounded-xl border text-center text-[10px] font-bold transition-all cursor-pointer ${
                           gReqMode === "existing"
                             ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
                             : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-300"
                         }`}
                       >
-                        🤝 انضمام لشركة قائمة
+                        🤝 انضمام لمنشأة
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setGReqMode("new_company")}
+                        className={`p-2 rounded-xl border text-center text-[10px] font-bold transition-all cursor-pointer ${
+                          gReqMode === "new_company"
+                            ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
+                            : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-300"
+                        }`}
+                      >
+                        🏢 شركة / مؤسسة
                       </button>
                     </div>
 
-                    {gReqMode === "new_company" ? (
+                    {gReqMode === "individual" ? (
+                      <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-2xl mt-2 text-[10px] text-slate-300 leading-relaxed">
+                        👤 <b className="text-amber-300">حساب أفراد مستقل:</b> يتم إنشاء مساحة عمل شخصية معزولة تماماً لإدارة عقودك وفواتيرك الخاصة دون الارتباط بأي شركة.
+                      </div>
+                    ) : gReqMode === "new_company" ? (
                       <div className="space-y-2.5 p-3 bg-slate-950/80 border border-amber-500/20 rounded-2xl mt-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setGReqEntityType("شركة")}
+                            className={`h-8 rounded-lg border text-[10px] font-bold cursor-pointer ${
+                              gReqEntityType === "شركة"
+                                ? "bg-amber-500/20 border-amber-500 text-amber-300"
+                                : "bg-slate-900 border-slate-800 text-slate-400"
+                            }`}
+                          >
+                            🏢 شركة (المدير العام للشركة)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setGReqEntityType("مؤسسة")}
+                            className={`h-8 rounded-lg border text-[10px] font-bold cursor-pointer ${
+                              gReqEntityType === "مؤسسة"
+                                ? "bg-amber-500/20 border-amber-500 text-amber-300"
+                                : "bg-slate-900 border-slate-800 text-slate-400"
+                            }`}
+                          >
+                            🏪 مؤسسة (المدير العام للمؤسسة)
+                          </button>
+                        </div>
+
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-300">اسم الشركة المطلوب تأسيسها <span className="text-rose-500">*</span></label>
+                          <label className="text-[10px] font-bold text-slate-300">اسم {gReqEntityType === "مؤسسة" ? "المؤسسة" : "الشركة"} المطلوب تأسيسها <span className="text-rose-500">*</span></label>
                           <input
                             required
                             type="text"
@@ -513,10 +611,10 @@ export function SaasLandingPortal({
                             />
                           </div>
                           <div className="space-y-1">
-                            <label className="text-[10px] font-bold text-slate-300">اسم مدير المنشأة</label>
+                            <label className="text-[10px] font-bold text-slate-300">اسم المدير العام للمنشأة</label>
                             <input
                               type="text"
-                              placeholder="المدير المسؤول"
+                              placeholder="المدير العام"
                               value={gReqCompManager}
                               onChange={(e) => setGReqCompManager(e.target.value)}
                               className="w-full h-9 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500"
@@ -526,7 +624,7 @@ export function SaasLandingPortal({
 
                         <div className="grid grid-cols-2 gap-2">
                           <div className="space-y-1">
-                            <label className="text-[10px] font-bold text-slate-300">هاتف الشركة</label>
+                            <label className="text-[10px] font-bold text-slate-300">هاتف المنشأة</label>
                             <input
                               type="text"
                               placeholder="05xxxxxxxx"
@@ -547,38 +645,39 @@ export function SaasLandingPortal({
                             />
                           </div>
                         </div>
+                        <p className="text-[9.5px] text-amber-300 font-medium">
+                          🔒 طلبات تأسيس الشركات والمؤسسات لا تظهر إلا للسوبر أدمن الوحيد وتُفعّل بعد موافقته.
+                        </p>
                       </div>
                     ) : (
                       <div className="space-y-3 mt-2">
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-300">اختر الشركة المراد الانضمام لها</label>
-                          <select
-                            value={gSelectedCompId}
-                            onChange={(e) => setGSelectedCompId(e.target.value)}
-                            className="w-full h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-amber-400 focus:outline-none cursor-pointer text-slate-950 bg-white"
-                          >
-                            {companies.map((c) => (
-                              <option key={c.id} value={c.id} className="text-slate-950">
-                                🏢 {c.name} ({c.slug})
-                              </option>
-                            ))}
-                          </select>
+                          <label className="text-[10px] font-bold text-slate-300">معرّف / رابط المنشأة (Slug) <span className="text-rose-500">*</span></label>
+                          <input
+                            required
+                            type="text"
+                            placeholder="أدخل كود أو رابط المنشأة (مثال: my-company)"
+                            value={gJoinCompSlug}
+                            onChange={(e) => setGJoinCompSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                            className="w-full h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 focus:outline-none focus:border-amber-500 text-left"
+                            dir="ltr"
+                          />
+                          <p className="text-[9px] text-slate-400">
+                            🔒 لحماية سرية المنشآت، الشركات المسجلة لا تُعرض علناً؛ أدخل رمز المنشأة المزود لك من إدارتها.
+                          </p>
                         </div>
 
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-300">الدور والمسؤولية المطلوبة في المنشأة</label>
+                          <label className="text-[10px] font-bold text-slate-300">الدور المطلوب داخل المنشأة</label>
                           <select
                             value={gReqRole}
                             onChange={(e: any) => setGReqRole(e.target.value)}
                             className="w-full h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-amber-300 focus:outline-none cursor-pointer text-slate-950 bg-white"
                           >
-                            <option value="cashier" className="text-slate-950">💰 كاشير / أمين صندوق (تحصيل وخزينة كاملة)</option>
-                            <option value="employee" className="text-slate-950">👨‍💼 موظف فرع محدود (حضور وبصمة)</option>
-                            <option value="admin" className="text-slate-950">👑 مدير فرع / مسؤول</option>
+                            <option value="cashier" className="text-slate-950">💰 كاشير / أمين صندوق</option>
+                            <option value="employee" className="text-slate-950">👨‍💼 موظف فرع</option>
+                            <option value="supervisor" className="text-slate-950">🕵️‍♂️ مشرف</option>
                           </select>
-                          <p className="text-[9px] text-amber-400 font-medium leading-relaxed">
-                            💡 يتم تفعيل الصلاحيات بعد اعتماد الإدارة مع عزل وحماية بيانات الشركات الأخرى تلقائياً.
-                          </p>
                         </div>
                       </div>
                     )}
@@ -855,36 +954,47 @@ export function SaasLandingPortal({
                   <div className="text-center mb-3">
                     <h3 className="text-sm font-black text-white flex items-center justify-center gap-1.5">
                       <Sparkles className="w-4 h-4 text-amber-500" />
-                      <span>إنشاء حساب مستخدم جديد</span>
+                      <span>إنشاء حساب جديد</span>
                     </h3>
-                    <p className="text-[10px] text-slate-400 mt-1">انضم ككاشير أو موظف لمنشأة قائمة أو أسس شركتك الخاصة فوراً</p>
+                    <p className="text-[10px] text-slate-400 mt-1">سجّل كفرد مستقل، أو انضم لمنشأة برمزها الخاص، أو قدّم طلب تأسيس شركة/مؤسسة (بموافقة السوبر أدمن)</p>
                   </div>
 
                   {/* 1. Account Scope Selection */}
                   <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-amber-400 block">نوع الحساب والهدف</label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <label className="text-[10px] font-black text-amber-400 block">نوع الحساب</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRegType("individual")}
+                        className={`p-2 rounded-xl border text-center text-[10px] font-bold transition-all cursor-pointer ${
+                          regType === "individual"
+                            ? "bg-amber-500/15 border-amber-500/40 text-amber-300 shadow-sm"
+                            : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-300"
+                        }`}
+                      >
+                        👤 تسجيل فرد
+                      </button>
                       <button
                         type="button"
                         onClick={() => setRegType("existing")}
-                        className={`p-2.5 rounded-xl border text-right text-[10px] font-bold transition-all cursor-pointer ${
+                        className={`p-2 rounded-xl border text-center text-[10px] font-bold transition-all cursor-pointer ${
                           regType === "existing"
                             ? "bg-amber-500/15 border-amber-500/40 text-amber-300 shadow-sm"
                             : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-300"
                         }`}
                       >
-                        🤝 انضمام لمنشأة قائمة
+                        🤝 انضمام لمنشأة
                       </button>
                       <button
                         type="button"
                         onClick={() => setRegType("new_company")}
-                        className={`p-2.5 rounded-xl border text-right text-[10px] font-bold transition-all cursor-pointer ${
+                        className={`p-2 rounded-xl border text-center text-[10px] font-bold transition-all cursor-pointer ${
                           regType === "new_company"
                             ? "bg-amber-500/15 border-amber-500/40 text-amber-300 shadow-sm"
                             : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-300"
                         }`}
                       >
-                        🏢 تأسيس شركة جديدة
+                        🏢 شركة / مؤسسة
                       </button>
                     </div>
                   </div>
@@ -970,21 +1080,27 @@ export function SaasLandingPortal({
                   </div>
 
                   {/* 3. Conditional Fields Based on Registration Type */}
-                  {regType === "existing" ? (
+                  {regType === "individual" ? (
+                    <div className="p-3.5 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-1.5 text-[10px] text-slate-300 leading-relaxed">
+                      <span className="font-bold text-amber-300 block">👤 تسجيل حساب فردي مستقل (الأفراد):</span>
+                      <p>يُمنح الفرد مساحة عمل خاصة ومعزولة تماماً (إدارة عقوده وفواتيره ومصروفاته ومراسلاته الخاصة) بدون إنشاء شركة وبدون ظهور أي بيانات لشركات أخرى.</p>
+                    </div>
+                  ) : regType === "existing" ? (
                     <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-3">
                       <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-300">اختر المنشأة المراد الانضمام لها <span className="text-rose-500">*</span></label>
-                        <select
-                          value={regCompId}
-                          onChange={(e) => setRegCompId(e.target.value)}
-                          className="w-full h-10 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-amber-400 focus:outline-none cursor-pointer text-slate-950 bg-white"
-                        >
-                          {companies.map((c) => (
-                            <option key={c.id} value={c.id} className="text-slate-950">
-                              🏢 {c.name} ({c.slug})
-                            </option>
-                          ))}
-                        </select>
+                        <label className="text-[10px] font-bold text-slate-300">رابط / معرّف المنشأة (Slug) <span className="text-rose-500">*</span></label>
+                        <input
+                          required
+                          type="text"
+                          placeholder="أدخل رمز/رابط المنشأة المزود لك (مثال: my-company)"
+                          value={regJoinSlug}
+                          onChange={(e) => setRegJoinSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                          className="w-full h-10 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 focus:outline-none text-left"
+                          dir="ltr"
+                        />
+                        <p className="text-[9px] text-slate-400">
+                          🔒 الشركات المسجلة خاصة ولا تظهر إلا للسوبر أدمن؛ أدخل رمز المنشأة الخاصة بك للانضمام.
+                        </p>
                       </div>
 
                       <div className="space-y-1">
@@ -996,18 +1112,42 @@ export function SaasLandingPortal({
                         >
                           <option value="cashier" className="text-slate-950">💰 كاشير / أمين صندوق (تحصيل وخزينة كاملة)</option>
                           <option value="employee" className="text-slate-950">👨‍💼 موظف فرع محدود (حضور وبصمة)</option>
-                          <option value="supervisor" className="text-slate-950">🕵️‍♂️ مشرف مكتب عام</option>
+                          <option value="supervisor" className="text-slate-950">🕵️‍♂️ مشرف مكتب</option>
                         </select>
                       </div>
                     </div>
                   ) : (
                     <div className="p-3 bg-slate-950/80 border border-amber-500/20 rounded-2xl space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setRegEntityType("شركة")}
+                          className={`h-9 rounded-xl border text-[10px] font-bold cursor-pointer ${
+                            regEntityType === "شركة"
+                              ? "bg-amber-500/20 border-amber-500 text-amber-300"
+                              : "bg-slate-900 border-slate-800 text-slate-400"
+                          }`}
+                        >
+                          🏢 تأسيس شركة (المدير العام للشركة)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRegEntityType("مؤسسة")}
+                          className={`h-9 rounded-xl border text-[10px] font-bold cursor-pointer ${
+                            regEntityType === "مؤسسة"
+                              ? "bg-amber-500/20 border-amber-500 text-amber-300"
+                              : "bg-slate-900 border-slate-800 text-slate-400"
+                          }`}
+                        >
+                          🏪 تأسيس مؤسسة (المدير العام للمؤسسة)
+                        </button>
+                      </div>
                       <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-300">اسم الشركة الجديد المطلوب تأسيسها <span className="text-rose-500">*</span></label>
+                        <label className="text-[10px] font-bold text-slate-300">اسم {regEntityType === "مؤسسة" ? "المؤسسة" : "الشركة"} المطلوب تأسيسها <span className="text-rose-500">*</span></label>
                         <input
                           required
                           type="text"
-                          placeholder="مثال: شركة الرؤية للتجارة"
+                          placeholder={regEntityType === "مؤسسة" ? "مثال: مؤسسة الرؤية للمقاولات" : "مثال: شركة الرؤية للتجارة"}
                           value={regNewCompName}
                           onChange={(e) => setRegNewCompName(e.target.value)}
                           className="w-full h-10 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500"
@@ -1150,7 +1290,7 @@ export function SaasLandingPortal({
           onSuccess2FA={(userCode, totpCode) => {
             if (userCode) setLoginCode(userCode);
             if (handleDirectLogin) {
-              handleDirectLogin(userCode, totpCode, gSelectedCompId || null);
+              handleDirectLogin(userCode, totpCode, null);
             } else {
               showToast("تم الاعتماد بنجاح عبر Authenticator!", "success");
             }
@@ -1198,18 +1338,43 @@ export function SaasLandingPortal({
                   <span>🚀</span>
                   <span>تأسيس منشأة سحابية جديدة ومساحة عمل SaaS مستقلة</span>
                 </h3>
-                <p className="text-[10px] text-slate-400 mt-1">تأسيس فوري للشركة وبناء كود مسؤول النظام مع فصل كامل وحصري لقاعدة البيانات.</p>
+                <p className="text-[10px] text-slate-400 mt-1">تقديم طلب تأسيس شركة وبناء كود مسؤول النظام — يتم التفعيل فور موافقة السوبر أدمن.</p>
               </div>
 
               <form onSubmit={handleRegister} className="space-y-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEntityType("شركة")}
+                    className={`h-9 rounded-xl border text-xs font-bold cursor-pointer ${
+                      entityType === "شركة"
+                        ? "bg-amber-500/20 border-amber-500 text-amber-300"
+                        : "bg-slate-950 border-slate-800 text-slate-400"
+                    }`}
+                  >
+                    🏢 تسجيل شركة (المدير العام للشركة)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEntityType("مؤسسة")}
+                    className={`h-9 rounded-xl border text-xs font-bold cursor-pointer ${
+                      entityType === "مؤسسة"
+                        ? "bg-amber-500/20 border-amber-500 text-amber-300"
+                        : "bg-slate-950 border-slate-800 text-slate-400"
+                    }`}
+                  >
+                    🏪 تسجيل مؤسسة (المدير العام للمؤسسة)
+                  </button>
+                </div>
+
                 {/* 1. Basic Fields */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-300">اسم الشركة / المنشأة <span className="text-rose-500">*</span></label>
+                    <label className="text-[10px] font-bold text-slate-300">اسم {entityType === "مؤسسة" ? "المؤسسة" : "الشركة"} <span className="text-rose-500">*</span></label>
                     <input
                       required
                       type="text"
-                      placeholder="مثال: شركة عرب وورلد للتجارة"
+                      placeholder={entityType === "مؤسسة" ? "مثال: مؤسسة عرب وورلد للمقاولات" : "مثال: شركة عرب وورلد للتجارة"}
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       className="w-full h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 text-right"
@@ -1319,13 +1484,13 @@ export function SaasLandingPortal({
                   />
                 </div>
 
-                {/* 3. Tenant Admin Account Setup */}
+                {/* 3. Tenant General Manager Account Setup */}
                 <div className="p-4 bg-amber-500/5 rounded-2xl border border-amber-500/20 space-y-3">
                   <span className="text-[11px] font-black text-amber-400 flex items-center gap-1.5">
                     <Shield className="w-4 h-4 text-amber-400" />
-                    <span>تأسيس حساب مسؤول النظام (المدير العام للمنشأة)</span>
+                    <span>تأسيس حساب المدير العام لـ{entityType === "مؤسسة" ? "لمؤسسة" : "لشركة"}</span>
                   </span>
-                  <p className="text-[10px] text-slate-400 leading-normal">هذه البيانات تستخدم فور تسجيل الشركة لتسجيل الدخول كمدير عام كامل الصلاحيات للمنشأة الجديدة.</p>
+                  <p className="text-[10px] text-slate-400 leading-normal">هذه البيانات تخص المدير العام لهذه {entityType === "مؤسسة" ? "المؤسسة" : "الشركة"} فقط بعد موافقة السوبر أدمن الوحيد.</p>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1">
