@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Company, AuthUser } from "../types";
+import { Company, User as AuthUser } from "../types";
 import {
   Shield,
   CheckCircle2,
@@ -27,7 +27,7 @@ interface SuperAdminCompanyApprovalsProps {
   onApproveCompany: (companyId: string) => Promise<void>;
   onRejectCompany: (companyId: string, reason?: string) => Promise<void>;
   onSwitchCompany?: (companyId: string) => void;
-  showToast: (msg: string, type?: "success" | "error" | "info" | "warning") => void;
+  showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
 export const SuperAdminCompanyApprovals: React.FC<SuperAdminCompanyApprovalsProps> = ({

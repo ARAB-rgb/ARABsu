@@ -88,6 +88,10 @@
         "date": { "type": "string" },
         "status": { "type": "string", "enum": ["جديد", "مرسل", "مقبول", "مرفوض"] },
         "notes": { "type": "string" },
+        "template_style": { "type": "string" },
+        "primary_color": { "type": "string" },
+        "accent_color": { "type": "string" },
+        "letterhead_template": { "type": "string" },
         "created_at": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "no", "client", "amount"]
@@ -220,6 +224,12 @@
         "address": { "type": "string" },
         "notes": { "type": "string" },
         "promissory_note_template": { "type": "string" },
+        "quote_template": { "type": "string" },
+        "quote_primary_color": { "type": "string" },
+        "quote_accent_color": { "type": "string" },
+        "letterhead_template": { "type": "string" },
+        "letterhead_primary_color": { "type": "string" },
+        "letterhead_accent_color": { "type": "string" },
         "created_at": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "name"]

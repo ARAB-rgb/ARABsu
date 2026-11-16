@@ -44,6 +44,19 @@ import { AuthenticatorModal } from "./components/AuthenticatorModal";
 import { NotFound404 } from "./components/NotFound404";
 import { SubcontractsManager } from "./components/SubcontractsManager";
 import { PosCashierModule } from "./components/PosCashierModule";
+import { DocumentDesignSelector } from "./components/DocumentDesignSelector";
+import {
+  QuoteTemplateId,
+  LetterheadTemplateId,
+  getCompanyDesignPrefs,
+  saveCompanyDesignPrefs,
+  buildQuotePrintHtml,
+  buildOfficialLetterPrintHtml,
+  DEFAULT_PRIMARY_COLOR,
+  DEFAULT_ACCENT_COLOR,
+  QUOTE_TEMPLATES,
+  LETTERHEAD_TEMPLATES,
+} from "./utils/documentTemplates";
 
 const compressAndResizeImage = (file: File, maxWidth = 800, maxHeight = 800, quality = 0.7): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -1128,6 +1141,11 @@ export default function App() {
   const [qItems, setQItems] = useState<{ description: string; unit?: string; quantity: number; price: number; total: number; }[]>([
     { description: "توريد وتركيب مواد وأعمال عامة", unit: "وحدة قطوعة", quantity: 1, price: 0, total: 0 }
   ]);
+  const [qTemplateStyle, setQTemplateStyle] = useState<QuoteTemplateId>("classic_formal");
+  const [qPrimaryColor, setQPrimaryColor] = useState<string>(DEFAULT_PRIMARY_COLOR);
+  const [qAccentColor, setQAccentColor] = useState<string>(DEFAULT_ACCENT_COLOR);
+  const [qLetterheadTemplate, setQLetterheadTemplate] = useState<LetterheadTemplateId>("auto");
+  const [showQuoteDesignPanel, setShowQuoteDesignPanel] = useState<boolean>(false);
 
   // Official Letters Forms (كليشة الخطابات الرسمية)
   const [letterRecipient, setLetterRecipient] = useState("");
@@ -1142,6 +1160,7 @@ export default function App() {
   const [letterDate, setLetterDate] = useState(new Date().toISOString().slice(0, 10));
   const [letterSearch, setLetterSearch] = useState("");
   const [letterCompanyFilter, setLetterCompanyFilter] = useState("all");
+  const [showLetterDesignPanel, setShowLetterDesignPanel] = useState<boolean>(false);
 
   // 2. Receipts Forms
   const [rContractQuery, setRContractQuery] = useState("");
@@ -1256,6 +1275,12 @@ export default function App() {
   const [cStampUrl, setCStampUrl] = useState("");
   const [cSignatureUrl, setCSignatureUrl] = useState("");
   const [cLetterheadUrl, setCLetterheadUrl] = useState("");
+  const [cQuoteTemplate, setCQuoteTemplate] = useState<QuoteTemplateId>("classic_formal");
+  const [cQuotePrimaryColor, setCQuotePrimaryColor] = useState<string>(DEFAULT_PRIMARY_COLOR);
+  const [cQuoteAccentColor, setCQuoteAccentColor] = useState<string>(DEFAULT_ACCENT_COLOR);
+  const [cLetterheadTemplate, setCLetterheadTemplate] = useState<LetterheadTemplateId>("auto");
+  const [cLetterheadPrimaryColor, setCLetterheadPrimaryColor] = useState<string>(DEFAULT_PRIMARY_COLOR);
+  const [cLetterheadAccentColor, setCLetterheadAccentColor] = useState<string>(DEFAULT_ACCENT_COLOR);
 
   // Attachments base64 strings
   const [rAttachment, setRAttachment] = useState("");
@@ -1520,7 +1545,7 @@ export default function App() {
       // Strictly check account status
       if (matchedUser.status && matchedUser.status !== "نشط") {
         if (matchedUser.status === "بانتظار موافقة السوبر أدمن" || matchedUser.status === "pending") {
-          showToast("⏳ طلب تسجيل هذه المنشأة لا يزال في خانة السوبر أدمن بانتظار المراجعة والاعتماد.", "warning");
+          showToast("⏳ طلب تسجيل هذه المنشأة لا يزال في خانة السوبر أدمن بانتظار المراجعة والاعتماد.", "info");
         } else {
           showToast("⚠️ عذراً، هذا الحساب ملغى أو معطل حالياً من قبل الإدارة!", "error");
         }
@@ -3151,6 +3176,40 @@ export default function App() {
       }
     }
   }, [currentUser, companies, selectedCompanyId, activeSection]);
+
+  useEffect(() => {
+    if (editQuoteId) return;
+    const targetId = formCompanyId || (selectedCompanyId !== "all" ? selectedCompanyId : currentUser?.company_id) || companies[0]?.id || "arab_world";
+    const comp = companies.find((c) => c.id === targetId) || companies[0];
+    const prefs = getCompanyDesignPrefs(comp);
+    setQTemplateStyle(prefs.quote_template);
+    setQPrimaryColor(prefs.quote_primary_color);
+    setQAccentColor(prefs.quote_accent_color);
+    setQLetterheadTemplate(prefs.letterhead_template);
+  }, [formCompanyId, selectedCompanyId, companies, editQuoteId, currentUser]);
+
+  const handleSaveCompanyDesignPrefs = async (
+    targetCompId: string,
+    prefs: Partial<{
+      quote_template: QuoteTemplateId;
+      quote_primary_color: string;
+      quote_accent_color: string;
+      letterhead_template: LetterheadTemplateId;
+      letterhead_primary_color: string;
+      letterhead_accent_color: string;
+    }>
+  ) => {
+    if (!targetCompId) return;
+    saveCompanyDesignPrefs(targetCompId, prefs);
+    setCompanies((prev) =>
+      prev.map((c) => (c.id === targetCompId ? { ...c, ...prefs } : c))
+    );
+    try {
+      await sb.from("companies").update(prefs as any).eq("id", targetCompId);
+    } catch {
+      // localStorage persistence already saved
+    }
+  };
 
   const getVisibleReceipts = () => {
     return receipts.filter((item) => {
@@ -4865,21 +4924,15 @@ ${attachment ? `
       const assocCompanyId = q.company_id || "arab_world";
       const company = companies.find((c) => c.id === assocCompanyId) || companies.find((c) => c.id === "arab_world") || companies[0];
       const companyName = company?.name || "شركة عرب وورلد للمقاولات";
-      const crNumber = company ? company.commercial_register || company.record_no || "" : "";
-      const taxNumber = company ? company.tax_no || "" : "";
-      const compPhone = company?.phone || "0539853287";
-      const compAddress = company?.address || "المملكة العربية السعودية";
-      const compEmail = company?.email || "info@arab1000.online";
-      const compActivity = (company as any)?.activity || (company as any)?.sub_title || "";
-
-      // Dynamic Letterhead & Logo Resolution per company
-      const customLetterhead = localStorage.getItem(`aw_company_letterhead_${assocCompanyId}`) || (company as any)?.letterhead_url || "";
+      const customLetterhead = localStorage.getItem(`aw_company_letterhead_${assocCompanyId}`) || company?.letterhead_url || "";
       const customLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || company?.logo_url || "";
       const isArabWorld = assocCompanyId === "arab_world" || companyName.includes("عرب وورلد للمقاولات");
 
-      // Full-page background ONLY if custom letterhead uploaded OR it is Arab World Contracting
-      const hasLetterheadBg = Boolean(customLetterhead || (isArabWorld && !customLetterhead));
-      const letterheadBgUrl = customLetterhead || (isArabWorld ? `${window.location.origin}/assets/letterhead_arab_world.png` : "");
+      const prefs = getCompanyDesignPrefs(company);
+      const templateStyle = (parsed.design?.template_style || q.template_style || prefs.quote_template) as QuoteTemplateId;
+      const letterheadTemplate = (parsed.design?.letterhead_template || q.letterhead_template || prefs.letterhead_template) as LetterheadTemplateId;
+      const primaryColor = parsed.design?.primary_color || q.primary_color || prefs.quote_primary_color;
+      const accentColor = parsed.design?.accent_color || q.accent_color || prefs.quote_accent_color;
 
       const w = window.open("", "_blank");
       if (!w) {
@@ -4887,543 +4940,21 @@ ${attachment ? `
         return;
       }
 
-      const tableRows = parsed.items
-        .map(
-          (item: any, idx: number) => `
-        <tr>
-          <td style="font-weight: 800; color: #071838; width: 5%;">${idx + 1}</td>
-          <td style="text-align: right; padding: 7px 10px; font-weight: 700; color: #071838; width: 43%; line-height: 1.4;">${item.description || "بند توريد وتركيب مواد وأعمال عامة"}</td>
-          <td style="font-weight: 800; color: #8a642d; background-color: #fffbeb; width: 14%;">${item.unit || "وحدة قطوعة"}</td>
-          <td style="font-weight: 800; color: #071838; width: 10%;">${item.quantity || 1}</td>
-          <td style="font-weight: 800; color: #071838; width: 14%;">${Number(item.price || 0).toLocaleString()} ريال</td>
-          <td style="font-weight: 900; color: #071838; background-color: #f8fafc; width: 14%;">${Number(item.total || 0).toLocaleString()} ريال</td>
-        </tr>
-      `
-        )
-        .join("");
+      const html = buildQuotePrintHtml({
+        quote: q,
+        items: parsed.items,
+        notesText: parsed.notes,
+        company,
+        templateStyle,
+        letterheadTemplate,
+        primaryColor,
+        accentColor,
+        customLetterhead,
+        customLogo,
+        isArabWorld,
+      });
 
-      const vatAmount = Math.round(Number(q.amount || 0) * (Number(q.vat || 0) / 100));
-
-      w.document.write(`
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-<meta charset="UTF-8">
-<title>عرض سعر رسمي رقم ${q.no} - ${companyName} - ${q.client}</title>
-<style>
-* {
-  box-sizing: border-box;
-  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-  color-adjust: exact !important;
-}
-body {
-  margin: 0;
-  background: #cbd5e1;
-  color: #071838;
-  padding: 20px 0;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.page {
-  width: 210mm;
-  height: 297mm;
-  margin: 0 auto 20px;
-  background: #ffffff;
-  position: relative;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.18);
-  overflow: hidden;
-  box-sizing: border-box;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.letterhead-bg {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: fill;
-  z-index: 1;
-  pointer-events: none;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.page-content {
-  position: relative;
-  z-index: 10;
-  height: 297mm;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-}
-.content-with-bg {
-  padding: 10mm 15mm 24mm 15mm;
-}
-.content-corporate {
-  padding: 12mm 15mm 14mm 15mm;
-}
-.top-header-row {
-  display: flex;
-  justify-content: flex-start;
-  align-items: flex-start;
-  min-height: 28mm;
-  margin-bottom: 3mm;
-}
-.doc-header-block {
-  width: 44%;
-  text-align: right;
-  padding-top: 2mm;
-}
-.doc-badge {
-  display: inline-block;
-  background: #071838 !important;
-  color: #ffffff !important;
-  padding: 5px 14px;
-  border-radius: 5px;
-  font-size: 13.5px;
-  font-weight: 900;
-  margin-bottom: 5px;
-  border-right: 4px solid #c59b27 !important;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.12);
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.meta-line {
-  font-size: 11.5px;
-  color: #071838 !important;
-  margin: 2px 0;
-  font-weight: 700;
-}
-.meta-line span {
-  color: #475569 !important;
-  margin-left: 6px;
-}
-.meta-line b {
-  color: #071838 !important;
-  font-family: monospace;
-  font-size: 12px;
-}
-/* Corporate Dynamic Header (When no A4 background image) */
-.corp-header-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-bottom: 10px;
-  border-bottom: 2.5px solid #071838;
-  margin-bottom: 4mm;
-  position: relative;
-}
-.corp-gold-bar {
-  height: 3px;
-  background: linear-gradient(90deg, #c59b27, #f59e0b, #c59b27);
-  margin-top: -2.5px;
-  margin-bottom: 4mm;
-  border-radius: 2px;
-}
-.corp-brand-side {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.corp-brand-logo {
-  max-height: 60px;
-  max-width: 130px;
-  object-fit: contain;
-  border-radius: 6px;
-}
-.corp-brand-emblem {
-  width: 50px;
-  height: 50px;
-  border-radius: 10px;
-  background: #071838;
-  border: 2px solid #c59b27;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  color: #c59b27;
-  box-shadow: 0 3px 8px rgba(7,24,56,0.15);
-}
-.corp-brand-text {
-  text-align: right;
-}
-.corp-brand-name {
-  font-size: 18px;
-  font-weight: 900;
-  color: #071838;
-  line-height: 1.2;
-}
-.corp-brand-activity {
-  font-size: 11px;
-  font-weight: 700;
-  color: #8a642d;
-  margin-top: 2px;
-}
-.corp-brand-meta {
-  display: flex;
-  gap: 10px;
-  font-size: 10.5px;
-  color: #475569;
-  font-weight: 700;
-  margin-top: 3px;
-}
-.corp-brand-meta b {
-  color: #071838;
-  font-family: monospace;
-}
-.corp-meta-side {
-  text-align: left;
-}
-.corp-footer {
-  margin-top: auto;
-  border-top: 2px solid #071838;
-  padding-top: 6px;
-  position: relative;
-}
-.corp-footer-accent {
-  position: absolute;
-  top: -2px;
-  right: 0;
-  width: 120px;
-  height: 2px;
-  background: #c59b27;
-}
-.corp-footer-grid {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 10.5px;
-  color: #334155;
-  font-weight: 700;
-}
-.corp-footer-comp {
-  font-weight: 900;
-  color: #071838;
-}
-.corp-footer-contact {
-  display: flex;
-  gap: 12px;
-  font-size: 10px;
-  color: #475569;
-}
-.corp-footer-note {
-  text-align: center;
-  font-size: 9px;
-  color: #94a3b8;
-  margin-top: 4px;
-  font-weight: 600;
-}
-.sec-title {
-  background: #071838 !important;
-  color: #ffffff !important;
-  padding: 6px 12px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 800;
-  margin: 6px 0 5px;
-  border-right: 4px solid #c59b27 !important;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.grid3 {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin-bottom: 6px;
-}
-.cbox {
-  border: 1px solid #cbd5e1 !important;
-  border-top: 2.5px solid #071838 !important;
-  background: #f8fafc !important;
-  border-radius: 4px;
-  padding: 5px 8px;
-  min-height: 42px;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.cbox b {
-  display: block;
-  font-size: 10px;
-  color: #8a642d !important;
-  margin-bottom: 2px;
-  font-weight: 800;
-}
-.cbox span {
-  font-size: 12px;
-  font-weight: 800;
-  color: #071838 !important;
-}
-table.q-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 4px;
-  font-size: 11px;
-}
-table.q-table th {
-  background: #071838 !important;
-  color: #ffffff !important;
-  padding: 7px 4px;
-  font-weight: 800;
-  font-size: 11px;
-  border: 1px solid #071838 !important;
-  text-align: center;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-table.q-table td {
-  border: 1px solid #94a3b8 !important;
-  padding: 6px 4px;
-  text-align: center;
-  font-weight: 700;
-  color: #071838 !important;
-  font-size: 11px;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.sum-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin: 6px 0;
-}
-.sum-card {
-  border: 1.5px solid #cbd5e1 !important;
-  border-top: 3px solid #c59b27 !important;
-  background: #f8fafc !important;
-  border-radius: 6px;
-  text-align: center;
-  padding: 6px 4px;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.sum-card b {
-  display: block;
-  color: #071838 !important;
-  font-size: 10.5px;
-  font-weight: 800;
-  margin-bottom: 3px;
-}
-.sum-card span {
-  font-size: 14.5px;
-  color: #071838 !important;
-  font-weight: 900;
-}
-.sum-card.grand-card {
-  border-color: #059669 !important;
-  border-top-color: #059669 !important;
-  background: #ecfdf5 !important;
-}
-.sum-card.grand-card span {
-  color: #047857 !important;
-  font-size: 16px;
-}
-.notes-body {
-  border: 1px solid #cbd5e1 !important;
-  background: #f8fafc !important;
-  border-radius: 4px;
-  padding: 6px 10px;
-  font-size: 10.5px;
-  line-height: 1.6;
-  color: #071838 !important;
-  font-weight: 600;
-  white-space: pre-wrap;
-  margin-bottom: 6px;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.signs-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  margin-top: auto;
-  padding-bottom: 2px;
-}
-.sign-box {
-  border-top: 1.5px dashed #071838 !important;
-  padding-top: 6px;
-  text-align: center;
-  font-size: 11px;
-  font-weight: 800;
-  color: #071838 !important;
-}
-.no-print {
-  position: fixed;
-  top: 15px;
-  left: 15px;
-  display: flex;
-  gap: 8px;
-  z-index: 9999;
-}
-.no-print button {
-  border: 0;
-  border-radius: 6px;
-  padding: 8px 14px;
-  color: white;
-  font-weight: bold;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-}
-.btn-print { background: #16a34a; }
-.btn-close { background: #475569; }
-
-@media print {
-  @page {
-    size: A4 portrait;
-    margin: 0;
-  }
-  html, body {
-    margin: 0 !important;
-    padding: 0 !important;
-    background: #ffffff !important;
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-    color-adjust: exact !important;
-  }
-  .page {
-    box-shadow: none !important;
-    margin: 0 !important;
-    width: 210mm !important;
-    height: 297mm !important;
-    page-break-after: always;
-  }
-  .no-print {
-    display: none !important;
-  }
-}
-</style>
-</head>
-<body>
-<div class="no-print">
-  <button class="btn-print" onclick="window.print()">طباعة / حفظ PDF</button>
-  <button class="btn-close" onclick="window.close()">إغلاق الصفحة</button>
-</div>
-<div class="page">
-  ${hasLetterheadBg ? `<img class="letterhead-bg" src="${letterheadBgUrl}" alt="كليشة عرض الأسعار" />` : ""}
-  <div class="page-content ${hasLetterheadBg ? "content-with-bg" : "content-corporate"}">
-    ${
-      hasLetterheadBg
-        ? `
-    <div class="top-header-row">
-      <div class="doc-header-block">
-        <div class="doc-badge">وثيقة عرض سعر مالي وتشغيلي</div>
-        <div class="meta-line"><span>الجهة المصدرة:</span> <b style="font-family: inherit; color: #8a642d;">${companyName}</b></div>
-        <div class="meta-line"><span>رقم العرض:</span> <b>${q.no}</b></div>
-        <div class="meta-line"><span>تاريخ الإصدار:</span> <b>${q.date}</b></div>
-        ${crNumber ? `<div class="meta-line"><span>السجل التجاري:</span> <b>${crNumber}</b></div>` : ""}
-        ${taxNumber ? `<div class="meta-line"><span>الرقم الضريبي:</span> <b>${taxNumber}</b></div>` : ""}
-      </div>
-    </div>`
-        : `
-    <div class="corp-header-row">
-      <div class="corp-brand-side">
-        ${
-          customLogo
-            ? `<img src="${customLogo}" alt="${companyName}" class="corp-brand-logo" />`
-            : `<div class="corp-brand-emblem">🏢</div>`
-        }
-        <div class="corp-brand-text">
-          <div class="corp-brand-name">${companyName}</div>
-          ${compActivity ? `<div class="corp-brand-activity">${compActivity}</div>` : ""}
-          <div class="corp-brand-meta">
-            ${crNumber ? `<span>سجل تجاري: <b>${crNumber}</b></span>` : ""}
-            ${taxNumber ? `<span>الرقم الضريبي: <b>${taxNumber}</b></span>` : ""}
-          </div>
-        </div>
-      </div>
-      <div class="corp-meta-side">
-        <div class="doc-badge">وثيقة عرض سعر رسمي</div>
-        <div class="meta-line"><span>رقم العرض:</span> <b>${q.no}</b></div>
-        <div class="meta-line"><span>تاريخ الإصدار:</span> <b>${q.date}</b></div>
-      </div>
-    </div>
-    <div class="corp-gold-bar"></div>`
-    }
-
-    <div class="sec-title">بيانات عميل عرض السعر والمشروع</div>
-    <div class="grid3">
-      <div class="cbox"><b>السادة / العميل الكريم:</b><span>${q.client}</span></div>
-      <div class="cbox"><b>رقم الجوال والتواصل:</b><span>${q.phone || "غير مسجل"}</span></div>
-      <div class="cbox"><b>المشروع والموقع التابع:</b><span>${q.project || "غير مسجل"}</span></div>
-    </div>
-
-    <div class="sec-title">بنود وجدول كميات وأسعار العرض المالي والتشغيلي</div>
-    <table class="q-table">
-      <thead>
-        <tr>
-          <th style="width: 5%">م</th>
-          <th style="width: 43%; text-align: right; padding-right: 12px;">البند والبيان الفني للمواد والأعمال</th>
-          <th style="width: 14%">الوحدة</th>
-          <th style="width: 10%">الكمية</th>
-          <th style="width: 14%">سعر الوحدة</th>
-          <th style="width: 14%">الإجمالي الكلي</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRows}
-      </tbody>
-    </table>
-
-    <div class="sum-grid">
-      <div class="sum-card">
-        <b>المبلغ قبل الضريبة</b>
-        <span>${Number(q.amount || 0).toLocaleString()} ريال</span>
-      </div>
-      <div class="sum-card">
-        <b>ضريبة القيمة المضافة (${q.vat || 15}%)</b>
-        <span>${vatAmount.toLocaleString()} ريال</span>
-      </div>
-      <div class="sum-card grand-card">
-        <b>الإجمالي النهائي الشامل</b>
-        <span>${Number(q.total || 0).toLocaleString()} ريال</span>
-      </div>
-    </div>
-
-    ${
-      parsed.notes
-        ? `
-    <div class="sec-title" style="margin-top: 6px;">الشروط والأحكام وملاحظات إضافية</div>
-    <div class="notes-body">${parsed.notes}</div>
-    `
-        : ""
-    }
-
-    <div class="signs-row">
-      <div class="sign-box">
-        <div>الطرف الأول (مقدم عرض السعر)</div>
-        <div style="font-size: 11px; margin-top: 3px; color: #8a642d; font-weight: 800;">${companyName}</div>
-        ${customLogo ? `<div style="margin-top: 4px;"><img src="${customLogo}" style="max-height: 28px; max-width: 80px; opacity: 0.8; object-fit: contain;" /></div>` : ""}
-        <div style="font-size: 10px; margin-top: 8px; color: #666;">التوقيع والختم المعتمد</div>
-      </div>
-      <div class="sign-box">
-        <div>الطرف الثاني (قبول واعتماد العميل)</div>
-        <div style="font-size: 11px; margin-top: 3px; color: #071838; font-weight: 800;">السادة: ${q.client}</div>
-        <div style="font-size: 10px; margin-top: 15px; color: #666;">التوقيع / المفوض بالاعتماد</div>
-      </div>
-    </div>
-
-    ${
-      !hasLetterheadBg
-        ? `
-    <div class="corp-footer">
-      <div class="corp-footer-accent"></div>
-      <div class="corp-footer-grid">
-        <div class="corp-footer-comp">${companyName}</div>
-        <div class="corp-footer-contact">
-          ${compAddress ? `<span>📍 ${compAddress}</span>` : ""}
-          ${compPhone ? `<span>📞 ${compPhone}</span>` : ""}
-          ${compEmail ? `<span>✉️ ${compEmail}</span>` : ""}
-        </div>
-      </div>
-      <div class="corp-footer-note">عرض أسعار رسمي صادر ومعتمد من المنظومة المالية</div>
-    </div>`
-        : ""
-    }
-  </div>
-</div>
-</body>
-</html>`);
+      w.document.write(html);
       w.document.close();
     } catch (e) {
       console.warn("Exception during Popups window.open printing:", e);
@@ -5498,450 +5029,29 @@ table.q-table td {
       const assocCompanyId = letter.company_id || "arab_world";
       const comp = companies.find((c) => c.id === assocCompanyId) || companies.find((c) => c.id === "arab_world") || companies[0];
       const companyName = letter.company_name?.trim() || comp?.name || "شركة عرب وورلد للمقاولات";
-      const crNumber = comp?.commercial_register || comp?.record_no || "";
-      const taxNumber = comp?.tax_no || "";
-      const compPhone = comp?.phone || "0539853287";
-      const compAddress = comp?.address || "المملكة العربية السعودية";
-      const compEmail = comp?.email || "info@arab1000.online";
-      const compActivity = (comp as any)?.activity || (comp as any)?.sub_title || "";
-
-      // Dynamic Letterhead & Logo Resolution per company
-      const customLetterhead = localStorage.getItem(`aw_company_letterhead_${assocCompanyId}`) || (comp as any)?.letterhead_url || "";
+      const customLetterhead = localStorage.getItem(`aw_company_letterhead_${assocCompanyId}`) || comp?.letterhead_url || "";
       const customLogo = localStorage.getItem(`aw_company_logo_${assocCompanyId}`) || comp?.logo_url || "";
       const isArabWorld = assocCompanyId === "arab_world" || companyName.includes("عرب وورلد للمقاولات");
 
-      // Full-page background ONLY if custom letterhead uploaded OR it is Arab World Contracting
-      const hasLetterheadBg = Boolean(customLetterhead || (isArabWorld && !customLetterhead));
-      const letterheadBgUrl = customLetterhead || (isArabWorld ? `${window.location.origin}/assets/letterhead_arab_world.png` : "");
+      const prefs = getCompanyDesignPrefs(comp);
+      const effectiveLetterheadTemplate: LetterheadTemplateId =
+        letter.letter_style === "standard" && prefs.letterhead_template === "auto"
+          ? "royal_navy"
+          : prefs.letterhead_template;
 
-      w.document.write(`
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-<meta charset="UTF-8">
-<title>خطاب رسمي رقم ${letter.no} - ${companyName} - ${letter.subject}</title>
-<style>
-* {
-  box-sizing: border-box;
-  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-  color-adjust: exact !important;
-}
-body {
-  margin: 0;
-  background: #cbd5e1;
-  color: #071838;
-  padding: 20px 0;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.page {
-  width: 210mm;
-  height: 297mm;
-  margin: 0 auto 20px;
-  background: #ffffff;
-  position: relative;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.18);
-  overflow: hidden;
-  box-sizing: border-box;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.letterhead-bg {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: fill;
-  z-index: 1;
-  pointer-events: none;
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.page-content {
-  position: relative;
-  z-index: 10;
-  height: 297mm;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-}
-.content-with-bg {
-  padding: 12mm 18mm 25mm 18mm;
-}
-.content-corporate {
-  padding: 14mm 18mm 16mm 18mm;
-}
-.top-header-row {
-  display: flex;
-  justify-content: flex-start;
-  align-items: flex-start;
-  min-height: 28mm;
-  margin-bottom: 5mm;
-}
-.doc-header-block {
-  width: 44%;
-  text-align: right;
-  padding-top: 2mm;
-}
-.doc-badge {
-  display: inline-block;
-  background: #071838 !important;
-  color: #ffffff !important;
-  padding: 5px 14px;
-  border-radius: 5px;
-  font-size: 13.5px;
-  font-weight: 900;
-  margin-bottom: 5px;
-  border-right: 4px solid #c59b27 !important;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.12);
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-}
-.meta-line {
-  font-size: 11.5px;
-  color: #071838 !important;
-  margin: 2px 0;
-  font-weight: 700;
-}
-.meta-line span {
-  color: #475569 !important;
-  margin-left: 6px;
-}
-.meta-line b {
-  color: #071838 !important;
-  font-family: monospace;
-}
-/* Corporate Dynamic Header (When no A4 background image) */
-.corp-header-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-bottom: 12px;
-  border-bottom: 2.5px solid #071838;
-  margin-bottom: 4mm;
-  position: relative;
-}
-.corp-gold-bar {
-  height: 3px;
-  background: linear-gradient(90deg, #c59b27, #f59e0b, #c59b27);
-  margin-top: -2.5px;
-  margin-bottom: 5mm;
-  border-radius: 2px;
-}
-.corp-brand-side {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.corp-brand-logo {
-  max-height: 65px;
-  max-width: 140px;
-  object-fit: contain;
-  border-radius: 6px;
-}
-.corp-brand-emblem {
-  width: 54px;
-  height: 54px;
-  border-radius: 12px;
-  background: #071838;
-  border: 2px solid #c59b27;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 26px;
-  color: #c59b27;
-  box-shadow: 0 4px 10px rgba(7,24,56,0.15);
-}
-.corp-brand-text {
-  text-align: right;
-}
-.corp-brand-name {
-  font-size: 19px;
-  font-weight: 900;
-  color: #071838;
-  line-height: 1.2;
-}
-.corp-brand-activity {
-  font-size: 11px;
-  font-weight: 700;
-  color: #8a642d;
-  margin-top: 2px;
-}
-.corp-brand-meta {
-  display: flex;
-  gap: 12px;
-  font-size: 10.5px;
-  color: #475569;
-  font-weight: 700;
-  margin-top: 3px;
-}
-.corp-brand-meta b {
-  color: #071838;
-  font-family: monospace;
-}
-.corp-meta-side {
-  text-align: left;
-}
-.corp-footer {
-  margin-top: auto;
-  border-top: 2px solid #071838;
-  padding-top: 8px;
-  position: relative;
-}
-.corp-footer-accent {
-  position: absolute;
-  top: -2px;
-  right: 0;
-  width: 120px;
-  height: 2px;
-  background: #c59b27;
-}
-.corp-footer-grid {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 10.5px;
-  color: #334155;
-  font-weight: 700;
-}
-.corp-footer-comp {
-  font-weight: 900;
-  color: #071838;
-}
-.corp-footer-contact {
-  display: flex;
-  gap: 12px;
-  font-size: 10px;
-  color: #475569;
-}
-.corp-footer-note {
-  text-align: center;
-  font-size: 9px;
-  color: #94a3b8;
-  margin-top: 4px;
-  font-weight: 600;
-}
-.letter-recipient {
-  margin: 6mm 0 3mm;
-  font-size: 14px;
-  font-weight: 800;
-  color: #071838;
-}
-.letter-recipient b {
-  color: #8a642d;
-}
-.letter-subject {
-  background: #f8fafc;
-  border-right: 4px solid #c59b27;
-  border-top: 1px solid #e2e8f0;
-  border-bottom: 1px solid #e2e8f0;
-  padding: 8px 14px;
-  margin: 3mm 0 5mm;
-  font-size: 13.5px;
-  font-weight: 900;
-  color: #071838;
-}
-.letter-subject b {
-  color: #071838;
-  margin-left: 6px;
-}
-.letter-greeting {
-  font-size: 13px;
-  font-weight: 800;
-  color: #071838;
-  margin-bottom: 4mm;
-}
-.letter-body {
-  font-size: 13px;
-  line-height: 2;
-  color: #1e293b;
-  font-weight: 600;
-  text-align: justify;
-  margin-bottom: 6mm;
-  white-space: pre-wrap;
-  flex: 1;
-}
-.letter-closing {
-  margin: 4mm 0 6mm;
-  font-size: 13px;
-  line-height: 1.8;
-  color: #071838;
-  font-weight: 700;
-  text-align: center;
-}
-.letter-signs {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  margin-top: auto;
-  padding-bottom: 4mm;
-}
-.sign-issuer {
-  text-align: right;
-  font-size: 12px;
-  color: #071838;
-}
-.sign-official {
-  text-align: center;
-  min-width: 55mm;
-  border-top: 1.5px dashed #071838;
-  padding-top: 8px;
-  font-size: 12px;
-  color: #071838;
-}
-.no-print {
-  position: fixed;
-  top: 15px;
-  left: 15px;
-  display: flex;
-  gap: 8px;
-  z-index: 9999;
-}
-.no-print button {
-  border: 0;
-  border-radius: 6px;
-  padding: 8px 14px;
-  color: white;
-  font-weight: bold;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-}
-.btn-print { background: #16a34a; }
-.btn-close { background: #475569; }
+      const html = buildOfficialLetterPrintHtml({
+        letter,
+        company: comp,
+        companyName,
+        letterheadTemplate: effectiveLetterheadTemplate,
+        primaryColor: prefs.letterhead_primary_color,
+        accentColor: prefs.letterhead_accent_color,
+        customLetterhead,
+        customLogo,
+        isArabWorld,
+      });
 
-@media print {
-  @page {
-    size: A4 portrait;
-    margin: 0;
-  }
-  html, body {
-    margin: 0 !important;
-    padding: 0 !important;
-    background: #ffffff !important;
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-    color-adjust: exact !important;
-  }
-  .page {
-    box-shadow: none !important;
-    margin: 0 !important;
-    width: 210mm !important;
-    height: 297mm !important;
-    page-break-after: always;
-  }
-  .no-print {
-    display: none !important;
-  }
-}
-</style>
-</head>
-<body>
-<div class="no-print">
-  <button class="btn-print" onclick="window.print()">طباعة / حفظ PDF</button>
-  <button class="btn-close" onclick="window.close()">إغلاق الصفحة</button>
-</div>
-<div class="page">
-  ${hasLetterheadBg ? `<img class="letterhead-bg" src="${letterheadBgUrl}" alt="كليشة الخطابات الرسمية" />` : ""}
-  <div class="page-content ${hasLetterheadBg ? "content-with-bg" : "content-corporate"}">
-    ${
-      hasLetterheadBg
-        ? `
-    <div class="top-header-row">
-      <div class="doc-header-block">
-        <div class="doc-badge">خطاب رسمي معتمد</div>
-        <div class="meta-line"><span style="color: #64748b;">الجهة الطالبة / المصدرة:</span> <b style="color: #8a642d; font-size: 11.5px; font-family: inherit;">${companyName}</b></div>
-        <div class="meta-line"><span>رقم الخطاب:</span> <b>${letter.no}</b></div>
-        <div class="meta-line"><span>تاريخ الإصدار:</span> <b>${letter.date}</b></div>
-        ${crNumber ? `<div class="meta-line"><span>السجل التجاري:</span> <b>${crNumber}</b></div>` : ""}
-        ${taxNumber ? `<div class="meta-line"><span>الرقم الضريبي:</span> <b>${taxNumber}</b></div>` : ""}
-        <div class="meta-line"><span>المرفقات:</span> <b>${letter.attachments || "لا يوجد"}</b></div>
-      </div>
-    </div>`
-        : `
-    <div class="corp-header-row">
-      <div class="corp-brand-side">
-        ${
-          customLogo
-            ? `<img src="${customLogo}" alt="${companyName}" class="corp-brand-logo" />`
-            : `<div class="corp-brand-emblem">🏢</div>`
-        }
-        <div class="corp-brand-text">
-          <div class="corp-brand-name">${companyName}</div>
-          ${compActivity ? `<div class="corp-brand-activity">${compActivity}</div>` : ""}
-          <div class="corp-brand-meta">
-            ${crNumber ? `<span>سجل تجاري: <b>${crNumber}</b></span>` : ""}
-            ${taxNumber ? `<span>الرقم الضريبي: <b>${taxNumber}</b></span>` : ""}
-          </div>
-        </div>
-      </div>
-      <div class="corp-meta-side">
-        <div class="doc-badge">خطاب رسمي معتمد</div>
-        <div class="meta-line"><span>رقم الخطاب:</span> <b>${letter.no}</b></div>
-        <div class="meta-line"><span>تاريخ الإصدار:</span> <b>${letter.date}</b></div>
-        <div class="meta-line"><span>المرفقات:</span> <b>${letter.attachments || "لا يوجد"}</b></div>
-      </div>
-    </div>
-    <div class="corp-gold-bar"></div>`
-    }
-
-    <div class="letter-recipient">
-      <b>سعادة / السادة:</b> <span>${letter.recipient}</span> <span style="margin-right: 6px; color: #8a642d;">المحترمين</span>
-    </div>
-
-    <div class="letter-subject">
-      <b>الموضوع:</b> <span>${letter.subject}</span>
-    </div>
-
-    <div class="letter-greeting">
-      السلام عليكم ورحمة الله وبركاته ،،، وبعد:
-    </div>
-
-    <div class="letter-body">${letter.content}</div>
-
-    <div class="letter-closing">
-      شاكرين ومقدرين لكم كريم تعاونكم وحسن تجاوبكم الدائم،،،<br>
-      <b>وتقبلوا فائق التحية والتقدير والامتنان،،،</b>
-    </div>
-
-    <div class="letter-signs">
-      <div class="sign-issuer">
-        <b>الجهة الطالبة والمصدرة للخطاب:</b><br>
-        <span style="font-weight: 800; color: #8a642d; font-size: 13.5px; display: inline-block; margin-top: 3px;">${companyName}</span>
-        ${crNumber ? `<div style="font-size: 10.5px; color: #475569; margin-top: 3px; font-weight: 700;">سجل تجاري: ${crNumber}</div>` : ""}
-        ${taxNumber ? `<div style="font-size: 10px; color: #64748b;">الرقم الضريبي: ${taxNumber}</div>` : ""}
-      </div>
-      <div class="sign-official">
-        <b>${letter.signatory_title || "المدير العام"}</b><br>
-        <span style="display: block; margin-top: 3px; font-weight: 900; font-size: 13px;">${letter.signatory_name || "م/ إدارة الشركة"}</span>
-        ${customLogo ? `<div style="margin-top: 6px;"><img src="${customLogo}" style="max-height: 38px; max-width: 90px; opacity: 0.75; object-fit: contain; filter: grayscale(20%);" /></div>` : ""}
-        <div style="font-size: 10px; color: #666; margin-top: 8px;">الختم والتوقيع الرسمي المعتمد</div>
-      </div>
-    </div>
-
-    ${
-      !hasLetterheadBg
-        ? `
-    <div class="corp-footer">
-      <div class="corp-footer-accent"></div>
-      <div class="corp-footer-grid">
-        <div class="corp-footer-comp">${companyName}</div>
-        <div class="corp-footer-contact">
-          ${compAddress ? `<span>📍 ${compAddress}</span>` : ""}
-          ${compPhone ? `<span>📞 ${compPhone}</span>` : ""}
-          ${compEmail ? `<span>✉️ ${compEmail}</span>` : ""}
-        </div>
-      </div>
-      <div class="corp-footer-note">وثيقة ومراسلة رسمية صادرة ومعتمدة إلكترونياً</div>
-    </div>`
-        : ""
-    }
-  </div>
-</div>
-</body>
-</html>`);
+      w.document.write(html);
       w.document.close();
     } catch (err) {
       console.warn("Exception during letter printing:", err);
@@ -6030,7 +5140,12 @@ body {
     }
     if (!qClient) return;
 
-    const serializedNotes = serializeQuoteNotes(qItems, qNotes);
+    const serializedNotes = serializeQuoteNotes(qItems, qNotes, {
+      template_style: qTemplateStyle,
+      primary_color: qPrimaryColor,
+      accent_color: qAccentColor,
+      letterhead_template: qLetterheadTemplate,
+    });
     const existingQuote = editQuoteId ? quotes.find((q) => q.id === editQuoteId) : null;
 
     const row = {
@@ -6831,6 +5946,15 @@ body {
 
     const targetCompanyId = editCompanyId || "comp_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
 
+    const designPrefsPayload = {
+      quote_template: cQuoteTemplate,
+      quote_primary_color: cQuotePrimaryColor,
+      quote_accent_color: cQuoteAccentColor,
+      letterhead_template: cLetterheadTemplate,
+      letterhead_primary_color: cLetterheadPrimaryColor,
+      letterhead_accent_color: cLetterheadAccentColor,
+    };
+
     const row: any = {
       name: cName.trim(),
       activity: cActivity.trim(),
@@ -6853,6 +5977,7 @@ body {
       letterhead_url: cLetterheadUrl.trim(),
       stamp_url: cStampUrl.trim(),
       signature_url: cSignatureUrl.trim(),
+      ...designPrefsPayload,
     };
 
     if (!editCompanyId) {
@@ -6865,12 +5990,26 @@ body {
       if (cLetterheadUrl.trim()) {
         localStorage.setItem(`aw_company_letterhead_${targetCompanyId}`, cLetterheadUrl.trim());
       }
+      saveCompanyDesignPrefs(targetCompanyId, designPrefsPayload);
 
-      const q = editCompanyId
-        ? sb.from("companies").update(row).eq("id", editCompanyId)
-        : sb.from("companies").insert(row);
+      let { error } = editCompanyId
+        ? await sb.from("companies").update(row).eq("id", editCompanyId)
+        : await sb.from("companies").insert(row);
 
-      const { error } = await q;
+      if (error && /column|schema/i.test(error.message || "")) {
+        const coreRow = { ...row };
+        delete coreRow.quote_template;
+        delete coreRow.quote_primary_color;
+        delete coreRow.quote_accent_color;
+        delete coreRow.letterhead_template;
+        delete coreRow.letterhead_primary_color;
+        delete coreRow.letterhead_accent_color;
+        const retry = editCompanyId
+          ? await sb.from("companies").update(coreRow).eq("id", editCompanyId)
+          : await sb.from("companies").insert(coreRow);
+        error = retry.error;
+      }
+
       if (error) {
         showToast(error.message, "error");
         return;
@@ -6899,8 +6038,14 @@ body {
       setCStampUrl("");
       setCSignatureUrl("");
       setCLetterheadUrl("");
+      setCQuoteTemplate("classic_formal");
+      setCQuotePrimaryColor(DEFAULT_PRIMARY_COLOR);
+      setCQuoteAccentColor(DEFAULT_ACCENT_COLOR);
+      setCLetterheadTemplate("auto");
+      setCLetterheadPrimaryColor(DEFAULT_PRIMARY_COLOR);
+      setCLetterheadAccentColor(DEFAULT_ACCENT_COLOR);
       await loadEverything();
-      showToast("تم حفظ بطاقة الشركة بنجاح!");
+      showToast("تم حفظ بطاقة الشركة وهوية الكليشة وعروض الأسعار بنجاح!");
     } catch {
       showToast("حدث خطأ أثناء الاتصال بالخادم لحفظ الشركة", "error");
     } finally {
@@ -8470,6 +7615,87 @@ body {
                   </div>
                 </div>
 
+                {/* Quote Design, Shape, Colors & Letterhead Customizer */}
+                {(() => {
+                  const targetQuoteCompId = getTargetCompanyId(formCompanyId) || companies[0]?.id || "arab_world";
+                  const targetQuoteComp = companies.find((c) => c.id === targetQuoteCompId) || companies[0];
+                  const activeQuoteShapeName = QUOTE_TEMPLATES.find((t) => t.id === qTemplateStyle)?.name || "الشكل الرسمي المتكامل";
+                  const activeLetterheadName = LETTERHEAD_TEMPLATES.find((l) => l.id === qLetterheadTemplate)?.name || "التلقائي الذكي";
+                  const compCustomLH = localStorage.getItem(`aw_company_letterhead_${targetQuoteCompId}`) || targetQuoteComp?.letterhead_url || "";
+                  const compCustomLogo = localStorage.getItem(`aw_company_logo_${targetQuoteCompId}`) || targetQuoteComp?.logo_url || "";
+
+                  return (
+                    <div className="space-y-3 border-t border-slate-800/80 pt-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-950/60 border border-slate-800 rounded-2xl px-4 py-3">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-4 h-4 rounded-full border border-white/25 inline-block" style={{ backgroundColor: qPrimaryColor }} />
+                            <span className="w-4 h-4 rounded-full border border-white/25 inline-block" style={{ backgroundColor: qAccentColor }} />
+                          </div>
+                          <div className="text-xs">
+                            <span className="text-slate-400 font-bold">الشكل: </span>
+                            <span className="text-white font-black">{activeQuoteShapeName}</span>
+                            <span className="mx-2 text-slate-600">|</span>
+                            <span className="text-slate-400 font-bold">الكليشة: </span>
+                            <span className="text-emerald-400 font-black">{activeLetterheadName}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await handleSaveCompanyDesignPrefs(targetQuoteCompId, {
+                                quote_template: qTemplateStyle,
+                                quote_primary_color: qPrimaryColor,
+                                quote_accent_color: qAccentColor,
+                                letterhead_template: qLetterheadTemplate,
+                              });
+                              showToast(`تم اعتماد الشكل والألوان كتصميم افتراضي لشركة «${targetQuoteComp?.name || "الشركة"}»`, "success");
+                            }}
+                            className="px-3 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 rounded-xl text-[10px] font-black cursor-pointer transition-all"
+                          >
+                            اعتماد كافتراضي للشركة
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowQuoteDesignPanel((prev) => !prev)}
+                            className="px-3.5 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-black cursor-pointer transition-all"
+                          >
+                            {showQuoteDesignPanel ? "إخفاء تخصيص التصميم ▲" : "🎨 تغيير الشكل والألوان والكليشة ▼"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {showQuoteDesignPanel && (
+                        <DocumentDesignSelector
+                          mode="quote"
+                          compact
+                          companyName={targetQuoteComp?.name || "شركة الأعمال"}
+                          quoteTemplate={qTemplateStyle}
+                          onChangeQuoteTemplate={setQTemplateStyle}
+                          letterheadTemplate={qLetterheadTemplate}
+                          onChangeLetterheadTemplate={setQLetterheadTemplate}
+                          primaryColor={qPrimaryColor}
+                          onChangePrimaryColor={setQPrimaryColor}
+                          accentColor={qAccentColor}
+                          onChangeAccentColor={setQAccentColor}
+                          hasUploadedLetterhead={Boolean(compCustomLH)}
+                          customLogoUrl={compCustomLogo}
+                          onResetToCompanyDefault={() => {
+                            const prefs = getCompanyDesignPrefs(targetQuoteComp);
+                            setQTemplateStyle(prefs.quote_template);
+                            setQPrimaryColor(prefs.quote_primary_color);
+                            setQAccentColor(prefs.quote_accent_color);
+                            setQLetterheadTemplate(prefs.letterhead_template);
+                            showToast("تمت استعادة التصميم الافتراضي للشركة", "info");
+                          }}
+                        />
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Items Table Builder */}
                 <div className="border-t border-slate-800/80 pt-5 space-y-3">
                   <div className="flex justify-between items-center">
@@ -8631,7 +7857,22 @@ body {
 
                 <div className="flex gap-2 justify-end">
                   {editQuoteId && (
-                    <button type="button" onClick={() => { setEditQuoteId(null); setQClient(""); setQPhone(""); setQProject(""); setQAmount(0); setQNotes(""); setQItems([{ description: "توريد وتركيب مواد وأعمال عامة", unit: "وحدة قطوعة", quantity: 1, price: 0, total: 0 }]); setFormCompanyId(""); }} className="px-5 py-2.5 bg-slate-800 rounded-xl text-xs font-black">إلغاء التعديل</button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditQuoteId(null);
+                        setQClient("");
+                        setQPhone("");
+                        setQProject("");
+                        setQAmount(0);
+                        setQNotes("");
+                        setQItems([{ description: "توريد وتركيب مواد وأعمال عامة", unit: "وحدة قطوعة", quantity: 1, price: 0, total: 0 }]);
+                        setFormCompanyId("");
+                      }}
+                      className="px-5 py-2.5 bg-slate-800 rounded-xl text-xs font-black"
+                    >
+                      إلغاء التعديل
+                    </button>
                   )}
                   <button type="submit" className="px-5 py-2.5 bg-amber-500 text-slate-950 rounded-xl text-xs font-black">{editQuoteId ? "تأكيد وتحديث العرض الحالي" : "حفظ وحيازة أسعار"}</button>
                 </div>
@@ -8644,6 +7885,7 @@ body {
                       <th className="py-2.5 px-3 font-bold">رقم العرض</th>
                       <th className="py-2.5 px-3 font-bold">العميل</th>
                       <th className="py-2.5 px-3 font-bold">المشروع</th>
+                      <th className="py-2.5 px-3 font-bold">الشكل والألوان</th>
                       <th className="py-2.5 px-3 font-bold">عدد البنود</th>
                       <th className="py-2.5 px-3 font-bold">القيمة والضريبة</th>
                       <th className="py-2.5 px-3 font-bold">الإجمالي الشامل</th>
@@ -8654,11 +7896,25 @@ body {
                   <tbody>
                     {getVisibleQuotes().map((q, idx) => {
                       const parsed = deserializeQuoteNotes(q.notes, q.amount);
+                      const qComp = companies.find((c) => c.id === (q.company_id || "arab_world")) || companies[0];
+                      const qCompPrefs = getCompanyDesignPrefs(qComp);
+                      const rowTplId = (parsed.design?.template_style || q.template_style || qCompPrefs.quote_template) as QuoteTemplateId;
+                      const rowPrim = parsed.design?.primary_color || q.primary_color || qCompPrefs.quote_primary_color;
+                      const rowAcc = parsed.design?.accent_color || q.accent_color || qCompPrefs.quote_accent_color;
+                      const rowTplLabel = QUOTE_TEMPLATES.find((t) => t.id === rowTplId)?.badge || "كلاسيكي";
+
                       return (
                         <tr key={idx} className="border-b border-slate-850 hover:bg-slate-800/10 transition-colors">
                           <td className="py-3 px-3 font-mono font-bold text-slate-300">{q.no}</td>
                           <td className="py-3 px-3 font-black text-white">{q.client}</td>
                           <td className="py-3 px-3">{q.project}</td>
+                          <td className="py-3 px-3">
+                            <div className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-300">
+                              <span className="w-3 h-3 rounded-full border border-white/20" style={{ backgroundColor: rowPrim }} />
+                              <span className="w-3 h-3 rounded-full border border-white/20" style={{ backgroundColor: rowAcc }} />
+                              <span>{rowTplLabel}</span>
+                            </div>
+                          </td>
                           <td className="py-3 px-3 font-bold text-slate-400">{parsed.items?.length || 1} بند</td>
                           <td className="py-3 px-3 font-mono">{q.amount.toLocaleString()} ريال (+{q.vat}%)</td>
                           <td className="py-3 px-3 font-black text-emerald-400 font-mono">{q.total.toLocaleString()} ريال</td>
@@ -8670,6 +7926,8 @@ body {
                             <button
                               onClick={() => {
                                 const parsedNotes = deserializeQuoteNotes(q.notes, q.amount);
+                                const targetComp = companies.find((c) => c.id === (q.company_id || "arab_world")) || companies[0];
+                                const prefs = getCompanyDesignPrefs(targetComp);
                                 setEditQuoteId(q.id);
                                 setQClient(q.client || "");
                                 setQPhone(q.phone || "");
@@ -8677,6 +7935,10 @@ body {
                                 setQAmount(q.amount || 0);
                                 setQNotes(parsedNotes.notes);
                                 setQItems(parsedNotes.items);
+                                setQTemplateStyle((parsedNotes.design?.template_style || q.template_style || prefs.quote_template) as QuoteTemplateId);
+                                setQPrimaryColor(parsedNotes.design?.primary_color || q.primary_color || prefs.quote_primary_color);
+                                setQAccentColor(parsedNotes.design?.accent_color || q.accent_color || prefs.quote_accent_color);
+                                setQLetterheadTemplate((parsedNotes.design?.letterhead_template || q.letterhead_template || prefs.letterhead_template) as LetterheadTemplateId);
                                 if (q.company_id) {
                                   setFormCompanyId(q.company_id);
                                 }
@@ -8719,10 +7981,12 @@ body {
           {activeSection === "letters" && (currentUser?.role === "admin" || can("quotes")) && (() => {
             const activeLetterCompObj = companies.find((c) => c.id === letterCompanyId) || companies[0];
             const activeLetterDisplayTitle = letterCompanyName.trim() || activeLetterCompObj?.name || "شركة عرب وورلد للمقاولات";
-            const currentLetterCompId = letterCompanyId || activeLetterCompObj?.id || "arab_world";
+            const currentLetterCompId = letterCompanyId === "custom" ? (activeLetterCompObj?.id || "arab_world") : (letterCompanyId || activeLetterCompObj?.id || "arab_world");
             const currentLetterCustomLetterhead = localStorage.getItem(`aw_company_letterhead_${currentLetterCompId}`) || (activeLetterCompObj as any)?.letterhead_url || "";
             const currentLetterCustomLogo = localStorage.getItem(`aw_company_logo_${currentLetterCompId}`) || activeLetterCompObj?.logo_url || "";
             const isLetterArabWorld = currentLetterCompId === "arab_world" || activeLetterDisplayTitle.includes("عرب وورلد للمقاولات");
+            const activeLetterPrefs = getCompanyDesignPrefs(activeLetterCompObj);
+            const activeLetterTemplateName = LETTERHEAD_TEMPLATES.find((l) => l.id === activeLetterPrefs.letterhead_template)?.name || "التلقائي الذكي";
 
             return (
             <div className="space-y-6" id="letters-tab-view">
@@ -8737,7 +8001,7 @@ body {
                       إدارة الخطابات والمراسلات الرسمية
                     </h2>
                     <p className="text-xs text-slate-300 leading-relaxed font-semibold">
-                      تحرير وطباعة الخطابات، التعاميم، والتعميدات مباشرة باسم وبيانات الشركة الطالبة مع دعم تخصيص كليشة A4 مستقلة وشعار خاص لكل شركة من جهازك، أو استخدام الترويسة الرقمية المعتمدة تلقائياً.
+                      تحرير وطباعة الخطابات، التعاميم، والتعميدات مباشرة باسم وبيانات الشركة الطالبة مع دعم تغيير نماذج الكليشة والألوان أو رفع كليشة A4 مستقلة وشعار خاص لكل شركة من جهازك.
                     </p>
                   </div>
 
@@ -8745,55 +8009,60 @@ body {
                   <div className="flex flex-col sm:flex-row items-center gap-4 bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-md">
                     {/* Live Thumbnail Preview */}
                     <div className="relative group shrink-0">
-                      {currentLetterCustomLetterhead ? (
+                      {(activeLetterPrefs.letterhead_template === "custom_image" || activeLetterPrefs.letterhead_template === "auto") && currentLetterCustomLetterhead ? (
                         <img
                           src={currentLetterCustomLetterhead}
                           alt="كليشة مخصصة"
                           className="w-16 h-24 object-cover rounded-lg border-2 border-emerald-500/70 shadow-lg"
                         />
-                      ) : isLetterArabWorld ? (
+                      ) : (activeLetterPrefs.letterhead_template === "custom_image" || activeLetterPrefs.letterhead_template === "auto") && isLetterArabWorld ? (
                         <img
                           src="/assets/letterhead_arab_world.png"
                           alt="كليشة عرب وورلد"
                           className="w-16 h-24 object-cover rounded-lg border border-amber-500/40 shadow-lg"
                         />
-                      ) : currentLetterCustomLogo ? (
-                        <div className="w-16 h-24 bg-white/95 rounded-lg border border-blue-500/40 shadow-lg p-1.5 flex flex-col justify-between items-center text-center">
-                          <img src={currentLetterCustomLogo} alt="شعار الشركة" className="max-h-8 object-contain" />
-                          <div className="text-[7px] font-black text-slate-800 leading-tight line-clamp-2">{activeLetterDisplayTitle}</div>
-                          <div className="w-full h-1 bg-amber-500 rounded-full"></div>
-                        </div>
                       ) : (
-                        <div className="w-16 h-24 bg-gradient-to-b from-slate-900 to-slate-950 rounded-lg border border-amber-500/30 shadow-lg p-1.5 flex flex-col justify-between items-center text-center">
-                          <span className="text-xl">🏢</span>
-                          <div className="text-[7px] font-black text-amber-300 leading-tight line-clamp-2">{activeLetterDisplayTitle}</div>
-                          <div className="text-[6px] text-slate-400">ترويسة رقمية</div>
+                        <div
+                          className="w-16 h-24 bg-white rounded-lg shadow-lg p-1.5 flex flex-col justify-between items-center text-center overflow-hidden relative"
+                          style={{ border: `2px solid ${activeLetterPrefs.letterhead_primary_color}` }}
+                        >
+                          <div className="w-full h-2.5 rounded-sm" style={{ backgroundColor: activeLetterPrefs.letterhead_primary_color }} />
+                          {currentLetterCustomLogo ? (
+                            <img src={currentLetterCustomLogo} alt="شعار الشركة" className="max-h-7 object-contain" />
+                          ) : (
+                            <span className="text-base">🏢</span>
+                          )}
+                          <div className="text-[6.5px] font-black leading-tight line-clamp-2" style={{ color: activeLetterPrefs.letterhead_primary_color }}>
+                            {activeLetterDisplayTitle}
+                          </div>
+                          <div className="w-full h-1 rounded-full" style={{ backgroundColor: activeLetterPrefs.letterhead_accent_color }} />
                         </div>
                       )}
                       <span className="absolute -bottom-1 -right-1 px-1.5 py-0.5 bg-slate-900/90 text-amber-300 rounded text-[8px] font-mono border border-slate-700">A4</span>
                     </div>
 
                     {/* Company Branding Details & Upload Actions */}
-                    <div className="text-right space-y-1.5 min-w-[210px]">
+                    <div className="text-right space-y-1.5 min-w-[230px]">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[10px] font-black text-amber-400">الشركة المصدرة للخطاب:</span>
-                        <span className={`px-2 py-0.5 rounded text-[9px] font-black ${
-                          currentLetterCustomLetterhead
-                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
-                            : isLetterArabWorld
-                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
-                            : "bg-blue-500/20 text-blue-300 border border-blue-500/30"
-                        }`}>
-                          {currentLetterCustomLetterhead ? "كليشة خاصة مرفوعة" : isLetterArabWorld ? "كليشة عرب وورلد" : "ترويسة رقمية معتمدة"}
+                        <span className="px-2 py-0.5 rounded text-[9px] font-black bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 truncate max-w-[140px]">
+                          {activeLetterTemplateName}
                         </span>
                       </div>
-                      <div className="text-xs font-black text-white max-w-[220px] truncate">{activeLetterDisplayTitle}</div>
+                      <div className="text-xs font-black text-white max-w-[230px] truncate">{activeLetterDisplayTitle}</div>
                       <div className="text-[10px] text-slate-400 font-mono">
                         {activeLetterCompObj?.phone || "0539853287"} | {activeLetterCompObj?.commercial_register ? `س.ت: ${activeLetterCompObj.commercial_register}` : "المملكة العربية السعودية"}
                       </div>
 
-                      {/* Quick Upload Buttons */}
+                      {/* Quick Upload & Template Switch Actions */}
                       <div className="flex flex-wrap gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowLetterDesignPanel((prev) => !prev)}
+                          className="cursor-pointer px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-[10px] font-black inline-flex items-center gap-1 transition-all shadow-sm"
+                        >
+                          <span>🎨</span> {showLetterDesignPanel ? "إغلاق النماذج" : "تغيير نموذج الكليشة والألوان"}
+                        </button>
                         <label className="cursor-pointer px-2.5 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-black inline-flex items-center gap-1 transition-all shadow-sm">
                           <span>📄</span> رفع كليشة A4
                           <input
@@ -8833,6 +8102,30 @@ body {
                   </div>
                 </div>
               </div>
+
+              {showLetterDesignPanel && (
+                <DocumentDesignSelector
+                  mode="letter"
+                  compact
+                  companyName={activeLetterDisplayTitle}
+                  quoteTemplate={activeLetterPrefs.quote_template}
+                  letterheadTemplate={activeLetterPrefs.letterhead_template}
+                  onChangeLetterheadTemplate={async (tpl) => {
+                    await handleSaveCompanyDesignPrefs(currentLetterCompId, { letterhead_template: tpl });
+                    showToast(`تم تغيير نموذج كليشة «${activeLetterDisplayTitle}» بنجاح`, "success");
+                  }}
+                  primaryColor={activeLetterPrefs.letterhead_primary_color}
+                  onChangePrimaryColor={async (color) => {
+                    await handleSaveCompanyDesignPrefs(currentLetterCompId, { letterhead_primary_color: color });
+                  }}
+                  accentColor={activeLetterPrefs.letterhead_accent_color}
+                  onChangeAccentColor={async (color) => {
+                    await handleSaveCompanyDesignPrefs(currentLetterCompId, { letterhead_accent_color: color });
+                  }}
+                  hasUploadedLetterhead={Boolean(currentLetterCustomLetterhead)}
+                  customLogoUrl={currentLetterCustomLogo}
+                />
+              )}
 
               {/* Letter Form with Quick Templates */}
               <form onSubmit={saveLetterLogic} className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
@@ -11748,6 +11041,17 @@ body {
           {/* Companies and Extracts Section */}
           {activeSection === "companies" && (currentUser?.role === "admin" || can("companies")) && (
             <div className="space-y-8">
+              {currentUser?.role === "admin" && (
+                <SuperAdminCompanyApprovals
+                  companies={companies}
+                  users={users}
+                  currentUser={currentUser}
+                  onApproveCompany={handleApproveCompany}
+                  onRejectCompany={handleRejectCompany}
+                  onSwitchCompany={(id) => setSelectedCompanyId(id)}
+                  showToast={showToast}
+                />
+              )}
               
               {/* Companies Tab Layout Header */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -12001,6 +11305,29 @@ body {
                           />
                         </div>
                       </div>
+
+                      {/* Section 7: Company Quote Shape, Colors & Switchable Letterhead Template */}
+                      <DocumentDesignSelector
+                        mode="company"
+                        stacked
+                        companyName={cName || "الشركة الجديدة"}
+                        quoteTemplate={cQuoteTemplate}
+                        onChangeQuoteTemplate={setCQuoteTemplate}
+                        letterheadTemplate={cLetterheadTemplate}
+                        onChangeLetterheadTemplate={setCLetterheadTemplate}
+                        primaryColor={cQuotePrimaryColor}
+                        onChangePrimaryColor={(col) => {
+                          setCQuotePrimaryColor(col);
+                          setCLetterheadPrimaryColor(col);
+                        }}
+                        accentColor={cQuoteAccentColor}
+                        onChangeAccentColor={(col) => {
+                          setCQuoteAccentColor(col);
+                          setCLetterheadAccentColor(col);
+                        }}
+                        hasUploadedLetterhead={Boolean(cLetterheadUrl)}
+                        customLogoUrl={cLogoUrl}
+                      />
                     </div>
 
                     <div className="flex gap-2 justify-end pt-2">
@@ -12010,6 +11337,7 @@ body {
                           onClick={() => {
                             setEditCompanyId(null);
                             setCName("");
+                            setCActivity("");
                             setCRegister("");
                             setCTaxNo("");
                             setCCapital("");
@@ -12026,6 +11354,12 @@ body {
                             setCBankName("");
                             setCIban("");
                             setCLetterheadUrl("");
+                            setCQuoteTemplate("classic_formal");
+                            setCQuotePrimaryColor(DEFAULT_PRIMARY_COLOR);
+                            setCQuoteAccentColor(DEFAULT_ACCENT_COLOR);
+                            setCLetterheadTemplate("auto");
+                            setCLetterheadPrimaryColor(DEFAULT_PRIMARY_COLOR);
+                            setCLetterheadAccentColor(DEFAULT_ACCENT_COLOR);
                           }}
                           className="px-4 py-2 bg-slate-800 hover:bg-slate-755 text-slate-300 rounded-xl text-xs font-black transition-colors"
                         >
@@ -12113,6 +11447,7 @@ body {
                                     <button
                                       type="button"
                                       onClick={() => {
+                                        const prefs = getCompanyDesignPrefs(comp);
                                         setEditCompanyId(comp.id);
                                         setCName(comp.name || "");
                                         setCActivity(comp.activity || (comp as any).sub_title || (comp as any).company_activity || "");
@@ -12135,6 +11470,12 @@ body {
                                         setCStampUrl((comp as any).stamp_url || "");
                                         setCSignatureUrl((comp as any).signature_url || "");
                                         setCLetterheadUrl(comp.letterhead_url || localStorage.getItem(`aw_company_letterhead_${comp.id}`) || "");
+                                        setCQuoteTemplate(prefs.quote_template);
+                                        setCQuotePrimaryColor(prefs.quote_primary_color);
+                                        setCQuoteAccentColor(prefs.quote_accent_color);
+                                        setCLetterheadTemplate(prefs.letterhead_template);
+                                        setCLetterheadPrimaryColor(prefs.letterhead_primary_color);
+                                        setCLetterheadAccentColor(prefs.letterhead_accent_color);
                                       }}
                                       className="p-1 px-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 rounded-lg text-[10px] font-bold transition-all"
                                     >
@@ -12164,6 +11505,22 @@ body {
                                     <span className="block text-[10px] font-mono font-black text-emerald-400 mt-0.5 truncate">{compTotalCapital.toLocaleString()}</span>
                                   </div>
                                 </div>
+
+                                {(() => {
+                                  const cardPrefs = getCompanyDesignPrefs(comp);
+                                  const qShape = QUOTE_TEMPLATES.find((t) => t.id === cardPrefs.quote_template)?.badge || "كلاسيكي";
+                                  const lhShape = LETTERHEAD_TEMPLATES.find((l) => l.id === cardPrefs.letterhead_template)?.badge || "تلقائي";
+                                  return (
+                                    <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900/60 border border-slate-800/60 rounded-xl px-2.5 py-1.5 text-[9.5px]">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="w-3 h-3 rounded-full border border-white/20" style={{ backgroundColor: cardPrefs.quote_primary_color }} />
+                                        <span className="w-3 h-3 rounded-full border border-white/20" style={{ backgroundColor: cardPrefs.quote_accent_color }} />
+                                        <span className="text-slate-300 font-bold">عرض السعر: {qShape}</span>
+                                      </div>
+                                      <span className="text-emerald-400 font-bold">الكليشة: {lhShape}</span>
+                                    </div>
+                                  );
+                                })()}
 
                                 <div className="text-[10px] text-slate-400 space-y-1 font-sans">
                                   {comp.tax_no && (

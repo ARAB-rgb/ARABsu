@@ -175,6 +175,10 @@ export interface Quote {
   status: "جديد" | "مرسل" | "مقبول" | "مرفوض";
   notes?: string;
   items?: { description: string; unit?: string; quantity: number; price: number; total: number; }[];
+  template_style?: string;
+  primary_color?: string;
+  accent_color?: string;
+  letterhead_template?: string;
   created_at?: string;
 }
 
@@ -348,6 +352,12 @@ export interface Company {
   iban?: string;            // رقم الآيبان
   stamp_url?: string;       // ختم الشركة الرسمي
   signature_url?: string;   // توقيع المدير العام المعتمد
+  quote_template?: string;  // شكل عرض السعر المختار للشركة
+  quote_primary_color?: string; // اللون الأساسي لعرض السعر
+  quote_accent_color?: string;  // اللون الثانوي/التمييز لعرض السعر
+  letterhead_template?: string; // نموذج الكليشة المختار للشركة
+  letterhead_primary_color?: string; // اللون الأساسي للكليشة
+  letterhead_accent_color?: string;  // اللون الثانوي للكليشة
   treasuries?: string[]; // قائمة الخزائن الخاصة بالشركة
   status?: "نشط" | "بانتظار موافقة السوبر أدمن" | "مرفوض" | string; // حالة الشركة واعتماد السوبر أدمن
   admin_code?: string;      // معرّف المشرف العام

@@ -1136,11 +1136,22 @@ export function awBuildWorkerNotes(cleanText: string, contract: any, leaves: any
   return tags.join(" ") + (notesText ? "\n" : "") + notesText;
 }
 
-export function serializeQuoteNotes(items: any[], notes: string): string {
-  return JSON.stringify({ items, notes });
+export interface QuoteDesignPayload {
+  template_style?: string;
+  primary_color?: string;
+  accent_color?: string;
+  letterhead_template?: string;
 }
 
-export function deserializeQuoteNotes(notesStr: string | undefined, fallbackAmount: number): { items: any[]; notes: string } {
+export function serializeQuoteNotes(items: any[], notes: string, design?: QuoteDesignPayload): string {
+  const payload: any = { items, notes };
+  if (design && (design.template_style || design.primary_color || design.accent_color || design.letterhead_template)) {
+    payload.design = design;
+  }
+  return JSON.stringify(payload);
+}
+
+export function deserializeQuoteNotes(notesStr: string | undefined, fallbackAmount: number): { items: any[]; notes: string; design?: QuoteDesignPayload } {
   try {
     const text = String(notesStr || "").trim();
     if (text && (text.startsWith("{") || text.startsWith("["))) {
@@ -1155,7 +1166,8 @@ export function deserializeQuoteNotes(notesStr: string | undefined, fallbackAmou
         if (parsed.items && Array.isArray(parsed.items)) {
           return {
             items: parsed.items.map((it: any) => ({ ...it, unit: it.unit || "وحدة قطوعة" })),
-            notes: parsed.notes || ""
+            notes: parsed.notes || "",
+            design: parsed.design
           };
         }
       }
@@ -1168,4 +1180,5 @@ export function deserializeQuoteNotes(notesStr: string | undefined, fallbackAmou
     notes: notesStr || ""
   };
 }
+
 
